@@ -7,6 +7,7 @@ pub mod chunker; // Deprecated: use chunk module instead
 pub mod config;
 pub mod lancedb_index;
 pub mod parser;
+pub mod rag;
 pub mod types;
 pub mod vector_index;
 
@@ -14,6 +15,7 @@ pub mod vector_index;
 mod tests;
 
 // Re-export commonly used types
+pub use rag::{RagResponse, RagSourceRef};
 pub use types::{
     AskOptions, AskResult, BaseStats, KnowledgeBaseConfig, KnowledgeChunk, KnowledgeSource,
     LearnOptions, LearnStats,
@@ -158,13 +160,23 @@ async fn process_file(
     for chunk_item in chunks {
         let embedding = generate_embedding(client, &config.model, &chunk_item.text).await?;
 
+        // Enrich metadata with source path
+        let mut metadata = chunk_item.metadata;
+        if let Some(custom) = metadata.custom.as_object_mut() {
+            custom.insert("source_path".to_string(), serde_json::json!(path.to_string_lossy()));
+        } else {
+            let mut custom_map = serde_json::Map::new();
+            custom_map.insert("source_path".to_string(), serde_json::json!(path.to_string_lossy()));
+            metadata.custom = serde_json::Value::Object(custom_map);
+        }
+
         let knowledge_chunk = KnowledgeChunk {
             id: chunk_item.id,
             source_id: chunk_item.source_id,
             position: chunk_item.position,
             text: chunk_item.text,
             embedding: Some(embedding),
-            metadata: serde_json::to_value(&chunk_item.metadata)?,
+            metadata: serde_json::to_value(&metadata)?,
         };
 
         index.upsert_chunk(&knowledge_chunk)?;

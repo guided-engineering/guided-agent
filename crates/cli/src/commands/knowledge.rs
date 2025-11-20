@@ -124,29 +124,34 @@ impl KnowledgeAskCommand {
 
         let api_key = config.resolve_api_key(&config.provider).ok().flatten();
 
-        let result = guided_knowledge::ask(&config.workspace, options, api_key.as_deref()).await?;
+        // Use RAG answering (LLM synthesis)
+        let response = guided_knowledge::rag::ask::ask_rag(&config.workspace, options, api_key.as_deref()).await?;
+
+        // Log diagnostic info
+        tracing::debug!(
+            "RAG response: max_score={:.3}, low_confidence={}, sources_count={}",
+            response.max_score,
+            response.low_confidence,
+            response.sources.len()
+        );
 
         if self.json {
-            let output = serde_json::json!({
-                "base": self.base,
-                "chunksCount": result.chunks.len(),
-                "chunks": result.chunks.iter().map(|c| serde_json::json!({
-                    "text": c.text,
-                    "sourceId": c.source_id,
-                    "position": c.position,
-                })).collect::<Vec<_>>(),
-                "scores": result.scores,
-            });
+            let output = serde_json::to_value(&response)
+                .map_err(|e| guided_core::AppError::Knowledge(format!("JSON serialization failed: {}", e)))?;
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         } else {
-            println!("Retrieved {} chunks:", result.chunks.len());
-            for (i, chunk) in result.chunks.iter().enumerate() {
-                println!(
-                    "\n[{}] Score: {:.3}\n{}",
-                    i + 1,
-                    result.scores.get(i).unwrap_or(&0.0),
-                    chunk.text
-                );
+            // Human-readable output
+            println!("Answer:");
+            println!("{}", response.answer);
+            println!();
+
+            if response.sources.is_empty() {
+                println!("Sources: (no sources available)");
+            } else {
+                println!("Sources:");
+                for source_ref in &response.sources {
+                    println!("- {} ({})", source_ref.source, source_ref.location);
+                }
             }
         }
 

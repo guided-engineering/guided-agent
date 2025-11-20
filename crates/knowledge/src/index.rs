@@ -1,7 +1,6 @@
 //! SQLite-backed vector index for knowledge chunks.
 
 use crate::types::{KnowledgeChunk, KnowledgeSource};
-use chrono::Utc;
 use guided_core::{AppError, AppResult};
 use rusqlite::{params, Connection};
 use std::path::Path;
@@ -55,7 +54,10 @@ pub fn insert_source(conn: &Connection, source: &KnowledgeSource) -> AppResult<(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             source.id,
-            source.path.as_ref().map(|p| p.to_string_lossy().to_string()),
+            source
+                .path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
             source.url,
             source.content_type,
             source.learned_at.to_rfc3339(),
@@ -102,7 +104,7 @@ pub fn query_chunks(
     query_embedding: &[f32],
     top_k: usize,
 ) -> AppResult<Vec<(KnowledgeChunk, f32)>> {
-    let query_bytes = embedding_to_bytes(query_embedding)?;
+    // Note: query_embedding is used directly in cosine_similarity calculation below
 
     let mut stmt = conn
         .prepare("SELECT id, source_id, position, text, embedding, metadata FROM chunks")
@@ -143,7 +145,11 @@ pub fn query_chunks(
     // Take top-k
     results.truncate(top_k);
 
-    tracing::debug!("Retrieved {} chunks (requested top-{})", results.len(), top_k);
+    tracing::debug!(
+        "Retrieved {} chunks (requested top-{})",
+        results.len(),
+        top_k
+    );
 
     Ok(results)
 }
@@ -223,6 +229,7 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
     use tempfile::NamedTempFile;
 
     #[test]

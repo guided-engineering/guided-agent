@@ -8,16 +8,28 @@ pub mod index;
 pub mod parser;
 pub mod types;
 
+#[cfg(test)]
+mod tests;
+
 // Re-export commonly used types
-pub use types::{AskOptions, AskResult, BaseStats, KnowledgeBaseConfig, KnowledgeChunk, KnowledgeSource, LearnOptions, LearnStats};
+pub use types::{
+    AskOptions, AskResult, BaseStats, KnowledgeBaseConfig, KnowledgeChunk, KnowledgeSource,
+    LearnOptions, LearnStats,
+};
 
 use chrono::Utc;
 use guided_core::{AppError, AppResult};
 use guided_llm::{create_client, LlmClient};
 use std::path::Path;
 use std::time::Instant;
-use types::*;
+
 use walkdir::WalkDir;
+
+/// Minimum cosine similarity score for a chunk to be considered relevant.
+/// Scores below this threshold will be filtered out.
+/// Range: -1.0 to 1.0, where 1.0 is perfect match, 0.0 is orthogonal, -1.0 is opposite.
+/// Note: 0.20 is suitable for mock embeddings; production systems should use 0.3-0.5.
+const MIN_RELEVANCE_SCORE: f32 = 0.20;
 
 /// Learn from sources and populate the knowledge base.
 pub async fn learn(
@@ -52,9 +64,7 @@ pub async fn learn(
     // Process paths
     for path in &options.paths {
         if path.is_file() {
-            if let Ok(stats) =
-                process_file(&conn, client.as_ref(), &config, path, &options).await
-            {
+            if let Ok(stats) = process_file(&conn, client.as_ref(), &config, path, &options).await {
                 sources_count += 1;
                 chunks_count += stats.0;
                 bytes_processed += stats.1;
@@ -219,15 +229,50 @@ pub async fn ask(
         .map_err(|e| AppError::Knowledge(format!("Failed to create embedding client: {}", e)))?;
 
     // Generate query embedding
-    let query_embedding = generate_embedding(client.as_ref(), &config.model, &options.query).await?;
+    let query_embedding =
+        generate_embedding(client.as_ref(), &config.model, &options.query).await?;
 
     // Retrieve top-k chunks
     let results = index::query_chunks(&conn, &query_embedding, options.top_k as usize)?;
 
-    let chunks: Vec<KnowledgeChunk> = results.iter().map(|(chunk, _score)| chunk.clone()).collect();
-    let scores: Vec<f32> = results.iter().map(|(_chunk, score)| *score).collect();
+    // Debug: log scores before filtering
+    if !results.is_empty() {
+        let all_scores: Vec<f32> = results.iter().map(|(_, s)| *s).collect();
+        tracing::debug!(
+            "Retrieved {} chunks before filtering - scores: {:?}",
+            results.len(),
+            all_scores
+        );
+    }
 
-    tracing::info!("Retrieved {} chunks", chunks.len());
+    // Apply relevance cutoff - filter out chunks with low similarity
+    let filtered_results: Vec<_> = results
+        .into_iter()
+        .filter(|(_chunk, score)| *score >= MIN_RELEVANCE_SCORE)
+        .collect();
+
+    let chunks: Vec<KnowledgeChunk> = filtered_results
+        .iter()
+        .map(|(chunk, _score)| chunk.clone())
+        .collect();
+    let scores: Vec<f32> = filtered_results
+        .iter()
+        .map(|(_chunk, score)| *score)
+        .collect();
+
+    if chunks.is_empty() {
+        tracing::info!(
+            "No relevant chunks found (all scores below {:.2} threshold)",
+            MIN_RELEVANCE_SCORE
+        );
+    } else {
+        tracing::info!(
+            "Retrieved {} relevant chunks (top score: {:.3}, lowest: {:.3})",
+            chunks.len(),
+            scores.first().unwrap_or(&0.0),
+            scores.last().unwrap_or(&0.0)
+        );
+    }
 
     Ok(AskResult { chunks, scores })
 }
@@ -266,9 +311,7 @@ pub fn stats(workspace: &Path, base_name: &str) -> AppResult<BaseStats> {
     let conn = index::init_index(&index_path)?;
     let (sources_count, chunks_count) = index::get_stats(&conn)?;
 
-    let db_size_bytes = std::fs::metadata(&index_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let db_size_bytes = std::fs::metadata(&index_path).map(|m| m.len()).unwrap_or(0);
 
     Ok(BaseStats {
         base_name: base_name.to_string(),
@@ -281,37 +324,79 @@ pub fn stats(workspace: &Path, base_name: &str) -> AppResult<BaseStats> {
 
 /// Generate embedding for text using the LLM client.
 async fn generate_embedding(
-    client: &dyn LlmClient,
-    model: &str,
+    _client: &dyn LlmClient,
+    _model: &str,
     text: &str,
 ) -> AppResult<Vec<f32>> {
-    // Use the completion endpoint to generate embeddings
-    // NOTE: This is a simplified approach. Real embedding models might need a different endpoint.
-    // For now, we'll use a deterministic mock based on text hash for testing purposes.
-    
-    // For production, you'd call an actual embedding endpoint like:
+    // NOTE: This is a mock implementation for Phase 5.
+    // Production systems should call actual embedding APIs:
     // client.embed(model, text).await
-    
-    // Mock implementation using text hash (replace with real embeddings in production)
-    let hash = text
-        .bytes()
-        .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-    
+
+    // Mock implementation: Create embeddings based on word frequencies and text properties
+    // This produces more realistic, content-aware embeddings for testing
+
     let dim = 384; // Common embedding dimension
-    let mut embedding = Vec::with_capacity(dim);
-    
-    for i in 0..dim {
-        let value = ((hash.wrapping_add(i as u64)) as f32 / u64::MAX as f32) * 2.0 - 1.0;
-        embedding.push(value);
+    let mut embedding = vec![0.0; dim];
+
+    // Use text properties to create content-aware embeddings
+    let lower = text.to_lowercase();
+
+    // Filter stop words for better discrimination
+    let stop_words: std::collections::HashSet<&str> = [
+        "the", "is", "at", "which", "on", "a", "an", "as", "are", "was", "were", "for", "to", "of",
+        "in", "and", "or", "but", "with", "by", "from", "this", "that", "be", "have", "has", "had",
+        "it", "its", "their", "they", "them",
+    ]
+    .iter()
+    .copied()
+    .collect();
+
+    let words: Vec<&str> = lower
+        .split_whitespace()
+        .filter(|w| !stop_words.contains(w) && w.len() > 2)
+        .collect();
+
+    // Build word frequency map
+    let mut word_freq = std::collections::HashMap::new();
+    for word in &words {
+        *word_freq.entry(*word).or_insert(0) += 1;
     }
-    
-    // Normalize
+
+    // Map each unique word to multiple dimensions based on character trigrams
+    // This creates more specific semantic vectors
+    for (word, freq) in word_freq.iter() {
+        // Use character trigrams for better semantic encoding
+        let chars: Vec<char> = word.chars().collect();
+        for i in 0..chars.len().saturating_sub(2) {
+            let trigram = format!(
+                "{}{}{}",
+                chars[i],
+                chars[i + 1],
+                chars.get(i + 2).unwrap_or(&' ')
+            );
+            let trigram_hash = trigram
+                .bytes()
+                .fold(0u64, |acc, b| acc.wrapping_mul(37).wrapping_add(b as u64));
+
+            let dim_idx = (trigram_hash as usize) % dim;
+            embedding[dim_idx] += (*freq as f32).sqrt(); // sqrt scale for better distribution
+        }
+
+        // Also encode whole word
+        let word_hash = word
+            .bytes()
+            .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+        let base_dim = (word_hash as usize) % dim;
+        embedding[base_dim] += *freq as f32;
+    }
+
+    // Normalize to unit vector
     let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 0.0 {
         for v in &mut embedding {
             *v /= norm;
         }
     }
-    
+
     Ok(embedding)
 }

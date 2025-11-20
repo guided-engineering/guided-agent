@@ -328,21 +328,14 @@ impl AskCommand {
             top_k: 5, // Default to top 5 chunks
         };
 
-        let result =
-            guided_knowledge::ask(&config.workspace, options, api_key.as_deref()).await?;
+        let result = guided_knowledge::ask(&config.workspace, options, api_key.as_deref()).await?;
 
         // Format chunks into context string
         let context = result
             .chunks
             .iter()
             .enumerate()
-            .map(|(i, chunk)| {
-                format!(
-                    "[Chunk {}]\n{}\n",
-                    i + 1,
-                    chunk.text.trim()
-                )
-            })
+            .map(|(i, chunk)| format!("[Chunk {}]\n{}\n", i + 1, chunk.text.trim()))
             .collect::<Vec<_>>()
             .join("\n");
 

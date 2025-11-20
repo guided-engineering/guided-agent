@@ -75,10 +75,7 @@ fn clean_markdown(text: &str) -> String {
         let trimmed = line.trim_start_matches('#').trim();
 
         // Skip horizontal rules and code fences
-        if trimmed.starts_with("---")
-            || trimmed.starts_with("```")
-            || trimmed.starts_with("~~~")
-        {
+        if trimmed.starts_with("---") || trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             continue;
         }
 

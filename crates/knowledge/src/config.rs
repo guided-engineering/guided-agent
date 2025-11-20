@@ -18,7 +18,10 @@ pub fn load_config(workspace: &Path, base_name: &str) -> AppResult<KnowledgeBase
         })?;
 
         let mut config: KnowledgeBaseConfig = serde_yaml::from_str(&content).map_err(|e| {
-            AppError::Knowledge(format!("Failed to parse config at {:?}: {}", config_path, e))
+            AppError::Knowledge(format!(
+                "Failed to parse config at {:?}: {}",
+                config_path, e
+            ))
         })?;
 
         // Ensure name matches
@@ -56,7 +59,10 @@ pub fn save_config(workspace: &Path, config: &KnowledgeBaseConfig) -> AppResult<
         .map_err(|e| AppError::Knowledge(format!("Failed to serialize config: {}", e)))?;
 
     fs::write(&config_path, yaml).map_err(|e| {
-        AppError::Knowledge(format!("Failed to write config to {:?}: {}", config_path, e))
+        AppError::Knowledge(format!(
+            "Failed to write config to {:?}: {}",
+            config_path, e
+        ))
     })?;
 
     tracing::debug!("Saved knowledge base config for '{}'", config.name);
@@ -74,10 +80,7 @@ pub fn get_config_path(workspace: &Path, base_name: &str) -> PathBuf {
 
 /// Get the base directory for a knowledge base.
 pub fn get_base_dir(workspace: &Path, base_name: &str) -> PathBuf {
-    workspace
-        .join(".guided")
-        .join("knowledge")
-        .join(base_name)
+    workspace.join(".guided").join("knowledge").join(base_name)
 }
 
 /// Get the SQLite index path for a base.

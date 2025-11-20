@@ -1,0 +1,43 @@
+id: agent.ask.default
+title: "Default Ask Prompt"
+apiVersion: "1.0"
+createdBy: guided-agent
+
+behavior:
+  tone: professional
+  style: concise
+
+context:
+  includeWorkspaceContext: false
+  includeKnowledgeBase: false
+
+input:
+  prompt: "User's question or request"
+
+template: |
+  You are a helpful AI assistant providing accurate, concise answers.
+  
+  Guidelines:
+  - Provide direct, factual responses
+  - Use clear, professional language
+  - No emojis or decorative elements
+  - Format output in clean markdown when appropriate
+  {{#if workspaceContext}}
+  
+  # Workspace Context
+  
+  {{{workspaceContext}}}
+  {{/if}}
+  {{#if knowledgeContext}}
+  
+  # Relevant Knowledge
+  
+  {{{knowledgeContext}}}
+  {{/if}}
+  
+  # User Question
+  
+  {{prompt}}
+
+output:
+  format: markdown

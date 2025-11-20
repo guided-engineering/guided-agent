@@ -28,20 +28,20 @@ This roadmap expands the previously defined short milestone list into a structur
 
 ---
 
-## Phase 3 — Prompt System
+## Phase 3 — Prompt System ✅ COMPLETED
 
-10. Create `.guided/prompts/` structure and default prompts.
-11. Implement the prompt loader (YAML + schema enforcement).
-12. Implement the prompt builder (context injection + Handlebars templates).
-13. Integrate prompt builder into `/ask`.
+10. ✅ Create `.guided/prompts/` structure and default prompts.
+11. ✅ Implement the prompt loader (YAML + schema enforcement).
+12. ✅ Implement the prompt builder (context injection + Handlebars templates).
+13. ✅ Integrate prompt builder into `/ask`.
 
 ---
 
-## Phase 4 — `/ask` Command
+## Phase 4 — `/ask` Command ✅ COMPLETED
 
-14. Implement `/ask` with streaming and JSON output modes.
-15. Add workspace context support.
-16. Add optional knowledge context support (stub until knowledge base is ready).
+14. ✅ Implement `/ask` with streaming and JSON output modes.
+15. ✅ Add workspace context support.
+16. ✅ Add optional knowledge context support (stub until knowledge base is ready).
 
 ---
 

@@ -1,0 +1,67 @@
+# Guided Agent Configuration
+# This file defines the LLM provider settings, embedding models, and other configuration options.
+
+llm:
+  # Active LLM provider for completions
+  # Options: openai, claude, ollama, gguf-local
+  activeProvider: ollama
+  
+  # Active embedding provider
+  # Options: openai, ollama, gguf-local
+  activeEmbeddingProvider: ollama
+  
+  # Provider-specific configurations
+  providers:
+    openai:
+      # API key loaded from environment variable
+      apiKeyEnv: OPENAI_API_KEY
+      # Default model for completions
+      model: gpt-4
+      # Default model for embeddings
+      embeddingModel: text-embedding-3-small
+      # API endpoint (optional, defaults to OpenAI)
+      endpoint: https://api.openai.com/v1
+      # Organization ID (optional)
+      organizationEnv: OPENAI_ORG_ID
+      
+    claude:
+      # API key loaded from environment variable
+      apiKeyEnv: ANTHROPIC_API_KEY
+      # Default model for completions
+      model: claude-3-5-sonnet-20241022
+      # API endpoint (optional, defaults to Anthropic)
+      endpoint: https://api.anthropic.com/v1
+      # API version
+      apiVersion: "2023-06-01"
+      
+    ollama:
+      # Ollama server endpoint
+      endpoint: http://localhost:11434
+      # Default model for completions
+      model: llama3
+      # Default model for embeddings
+      embeddingModel: nomic-embed-text
+      # Connection timeout in seconds
+      timeout: 30
+      
+    gguf-local:
+      # Path to GGUF model file for completions
+      modelPathEnv: GGUF_MODEL_PATH
+      # Path to GGUF model file for embeddings
+      embeddingModelPathEnv: GGUF_EMBEDDING_MODEL_PATH
+      # Number of threads for inference
+      threads: 4
+      # Context size
+      contextSize: 2048
+
+# Workspace settings
+workspace:
+  # Default workspace path (overridden by --workspace flag)
+  path: .
+  
+# Logging settings
+logging:
+  # Default log level (error, warn, info, debug, trace)
+  level: info
+  # Enable colored output
+  color: true

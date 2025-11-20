@@ -1,0 +1,17 @@
+[package]
+name = "guided"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+guided-core.workspace = true
+guided-llm.workspace = true
+guided-prompt.workspace = true
+clap.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+serde_json.workspace = true
+futures.workspace = true

@@ -61,6 +61,30 @@ impl KnowledgeLearnCommand {
     pub async fn execute(&self, config: &AppConfig) -> AppResult<()> {
         tracing::info!("Executing knowledge learn command for base '{}'", self.base);
 
+        // Resolve embedding provider/model from LlmConfig or fallback to trigram (fast local)
+        let (provider, model) = if let Some(llm_config) = &config.llm {
+            // Use activeEmbeddingProvider from config
+            let embedding_provider = &llm_config.active_embedding_provider;
+            if let Some(provider_config) = llm_config.providers.get(embedding_provider) {
+                let embedding_model = match provider_config {
+                    guided_core::config::ProviderConfig::OpenAI { embedding_model, .. } => {
+                        embedding_model.clone().unwrap_or_else(|| "text-embedding-3-small".to_string())
+                    }
+                    guided_core::config::ProviderConfig::Ollama { embedding_model, .. } => {
+                        embedding_model.clone().unwrap_or_else(|| "nomic-embed-text".to_string())
+                    }
+                    _ => "trigram-v1".to_string(),
+                };
+                (embedding_provider.clone(), embedding_model)
+            } else {
+                // Fallback if provider not found - use fast local trigram
+                ("trigram".to_string(), "trigram-v1".to_string())
+            }
+        } else {
+            // Fallback if no llm config - use fast local trigram
+            ("trigram".to_string(), "trigram-v1".to_string())
+        };
+
         let options = LearnOptions {
             base_name: self.base.clone(),
             paths: self.path.clone(),
@@ -68,11 +92,28 @@ impl KnowledgeLearnCommand {
             include: self.include.clone(),
             exclude: self.exclude.clone(),
             reset: self.reset,
+            provider: Some(provider),
+            model: Some(model),
         };
 
         let api_key = config.resolve_api_key(&config.provider).ok().flatten();
 
-        let stats = guided_knowledge::learn(&config.workspace, &options, api_key.as_deref()).await?;
+        // Create progress reporter for user-facing output
+        let progress_reporter = if self.json {
+            guided_knowledge::ProgressReporter::noop()
+        } else {
+            use std::sync::Arc;
+            guided_knowledge::ProgressReporter::new(Arc::new(|event| {
+                eprintln!("{}", event.format_simple());
+            }))
+        };
+
+        let stats = guided_knowledge::learn_with_progress(
+            &config.workspace,
+            &options,
+            api_key.as_deref(),
+            progress_reporter,
+        ).await?;
 
         if self.json {
             let output = serde_json::json!({

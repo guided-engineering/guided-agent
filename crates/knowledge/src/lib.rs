@@ -7,7 +7,9 @@ pub mod chunker; // Deprecated: use chunk module instead
 pub mod config;
 pub mod embeddings;
 pub mod lancedb_index;
+pub mod metadata;
 pub mod parser;
+pub mod progress;
 pub mod rag;
 pub mod types;
 pub mod vector_index;
@@ -16,6 +18,7 @@ pub mod vector_index;
 mod tests;
 
 // Re-export commonly used types
+pub use progress::{ProgressEvent, ProgressReporter};
 pub use rag::{RagResponse, RagSourceRef};
 pub use types::{
     AskOptions, AskResult, BaseStats, KnowledgeBaseConfig, KnowledgeChunk, KnowledgeSource,
@@ -23,7 +26,7 @@ pub use types::{
 };
 
 use guided_core::{AppError, AppResult};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use walkdir::WalkDir;
@@ -31,8 +34,9 @@ use walkdir::WalkDir;
 /// Minimum cosine similarity score for a chunk to be considered relevant.
 /// Scores below this threshold will be filtered out.
 /// Range: -1.0 to 1.0, where 1.0 is perfect match, 0.0 is orthogonal, -1.0 is opposite.
-/// Note: 0.20 is suitable for mock embeddings; production systems should use 0.3-0.5.
-const MIN_RELEVANCE_SCORE: f32 = 0.20;
+/// Note: 0.08 is suitable for trigram embeddings (lower semantic accuracy);
+/// production systems with neural embeddings should use 0.3-0.5.
+const MIN_RELEVANCE_SCORE: f32 = 0.08;
 
 /// Learn from sources and populate the knowledge base.
 pub async fn learn(
@@ -40,12 +44,35 @@ pub async fn learn(
     options: &LearnOptions,
     _api_key: Option<&str>,
 ) -> AppResult<LearnStats> {
+    learn_with_progress(workspace, options, _api_key, progress::ProgressReporter::noop()).await
+}
+
+/// Learn with progress reporting.
+pub async fn learn_with_progress(
+    workspace: &Path,
+    options: &LearnOptions,
+    _api_key: Option<&str>,
+    progress: progress::ProgressReporter,
+) -> AppResult<LearnStats> {
     let start = Instant::now();
 
     tracing::info!("Starting learn operation for base '{}'", options.base_name);
 
     // Load or create config
-    let config = config::load_config(workspace, &options.base_name)?;
+    let mut config = config::load_config(workspace, &options.base_name)?;
+
+    // Override provider/model if specified in options
+    if let Some(provider) = &options.provider {
+        config.provider = provider.clone();
+        tracing::info!("Using provider from options: {}", provider);
+    }
+    if let Some(model) = &options.model {
+        config.model = model.clone();
+        tracing::info!("Using model from options: {}", model);
+    }
+
+    // Save config (creates base directory if needed)
+    config::save_config(workspace, &config)?;
 
     // Initialize LanceDB index
     let index_path = config::get_index_path(workspace, &options.base_name);
@@ -68,55 +95,64 @@ pub async fn learn(
     let mut chunks_count = 0u32;
     let mut bytes_processed = 0u64;
 
-    // Process paths
+    // Phase 1: Discover files
+    let mut all_files = Vec::new();
     for path in &options.paths {
         if path.is_file() {
-            if let Ok((source_id, chunk_count, byte_count)) =
-                process_file(workspace, &options.base_name, &mut index, &config, path, &options).await
-            {
-                // Track source
-                let source = KnowledgeSource {
-                    source_id,
-                    path: path.to_string_lossy().to_string(),
-                    source_type: "file".to_string(),
-                    indexed_at: chrono::Utc::now(),
-                    chunk_count,
-                    byte_count,
-                };
-                source_manager.track_source(&source)?;
-
-                sources_count += 1;
-                chunks_count += chunk_count;
-                bytes_processed += byte_count;
-            }
+            all_files.push(path.clone());
         } else if path.is_dir() {
-            for entry in WalkDir::new(path)
-                .follow_links(false)
-                .into_iter()
-                .filter_map(|e| e.ok())
-            {
+            for entry in WalkDir::new(path).follow_links(false).into_iter().filter_map(|e| e.ok()) {
                 let entry_path = entry.path();
                 if entry_path.is_file() && should_include(entry_path, &options) {
-                    if let Ok((source_id, chunk_count, byte_count)) =
-                        process_file(workspace, &options.base_name, &mut index, &config, entry_path, &options)
-                            .await
-                    {
-                        // Track source
-                        let source = KnowledgeSource {
-                            source_id,
-                            path: entry_path.to_string_lossy().to_string(),
-                            source_type: "file".to_string(),
-                            indexed_at: chrono::Utc::now(),
-                            chunk_count,
-                            byte_count,
-                        };
-                        source_manager.track_source(&source)?;
-
-                        sources_count += 1;
-                        chunks_count += chunk_count;
-                        bytes_processed += byte_count;
+                    all_files.push(entry_path.to_path_buf());
+                }
+            }
+        }
+    }
+    
+    let total_files = all_files.len() as u64;
+    tracing::info!("Discovered {} files to process", total_files);
+    
+    // Phase 2: Process files with batch optimization
+    const BATCH_SIZE: usize = 10; // Process 10 files before embedding batch
+    let mut pending_chunks: Vec<(String, Vec<chunk::Chunk>, PathBuf, u64)> = Vec::new();
+    
+    for (idx, path) in all_files.iter().enumerate() {
+        let current = (idx + 1) as u64;
+        
+        progress.parse(current, Some(total_files), &path.to_string_lossy());
+        
+        // Parse and chunk file (fast operations)
+        match parse_and_chunk_file(workspace, &config, path, &progress).await {
+            Ok((source_id, chunks, byte_count)) => {
+                pending_chunks.push((source_id.clone(), chunks, path.clone(), byte_count));
+                
+                // Process batch when full or at end
+                if pending_chunks.len() >= BATCH_SIZE || idx == all_files.len() - 1 {
+                    let batch_result = process_batch(
+                        workspace,
+                        &options.base_name,
+                        &mut index,
+                        &config,
+                        &source_manager,
+                        &mut pending_chunks,
+                        &progress,
+                    ).await;
+                    
+                    match batch_result {
+                        Ok((batch_sources, batch_chunks, batch_bytes)) => {
+                            sources_count += batch_sources;
+                            chunks_count += batch_chunks;
+                            bytes_processed += batch_bytes;
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to process batch: {}", e);
+                        }
                     }
                 }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to parse/chunk file {:?}: {}", path, e);
             }
         }
     }
@@ -146,21 +182,20 @@ pub async fn learn(
     })
 }
 
-/// Process a single file.
-/// Returns (source_id, chunk_count, byte_count).
-async fn process_file(
+/// Parse and chunk a file (no embedding yet).
+/// Returns (source_id, chunks, byte_count).
+async fn parse_and_chunk_file(
     workspace: &Path,
-    base_name: &str,
-    index: &mut dyn vector_index::VectorIndex,
     config: &KnowledgeBaseConfig,
     path: &Path,
-    _options: &LearnOptions,
-) -> AppResult<(String, u32, u64)> {
-    tracing::debug!("Processing file: {:?}", path);
-
+    progress: &progress::ProgressReporter,
+) -> AppResult<(String, Vec<chunk::Chunk>, u64)> {
     // Parse file
     let text = parser::parse_file(path)?;
     let size_bytes = text.len() as u64;
+
+    // Extract rich metadata using Phase 5.5.1 metadata module
+    let file_metadata = metadata::extract_metadata(path, &text);
 
     // Create source
     let source_id = uuid::Uuid::new_v4().to_string();
@@ -178,25 +213,73 @@ async fn process_file(
     let pipeline = chunk::ChunkPipeline::new(chunk_config);
     let mut chunks = pipeline.process(&source_id, &text, Some(path))?;
 
-    // Enrich metadata with source path
+    // Enrich chunks with rich metadata from Phase 5.5.1
     for chunk_item in &mut chunks {
-        if let Some(custom) = chunk_item.metadata.custom.as_object_mut() {
-            custom.insert("source_path".to_string(), serde_json::json!(path.to_string_lossy()));
+        let mut custom_map = if let Some(custom) = chunk_item.metadata.custom.as_object() {
+            custom.clone()
         } else {
-            let mut custom_map = serde_json::Map::new();
-            custom_map.insert("source_path".to_string(), serde_json::json!(path.to_string_lossy()));
-            chunk_item.metadata.custom = serde_json::Value::Object(custom_map);
+            serde_json::Map::new()
+        };
+
+        // Add structured metadata fields
+        custom_map.insert("source_path".to_string(), serde_json::json!(file_metadata.source_path));
+        custom_map.insert("file_name".to_string(), serde_json::json!(file_metadata.file_name));
+        custom_map.insert("file_type".to_string(), serde_json::json!(file_metadata.file_type.as_str()));
+        if let Some(ref lang) = file_metadata.language {
+            custom_map.insert("language".to_string(), serde_json::json!(lang.as_str()));
         }
+        custom_map.insert("file_size_bytes".to_string(), serde_json::json!(file_metadata.file_size_bytes));
+        custom_map.insert("file_line_count".to_string(), serde_json::json!(file_metadata.file_line_count));
+        custom_map.insert("file_modified_at".to_string(), serde_json::json!(file_metadata.file_modified_at.timestamp()));
+        custom_map.insert("content_hash".to_string(), serde_json::json!(file_metadata.content_hash));
+        custom_map.insert("tags".to_string(), serde_json::json!(file_metadata.tags));
+        custom_map.insert("created_at".to_string(), serde_json::json!(file_metadata.created_at.timestamp()));
+        custom_map.insert("updated_at".to_string(), serde_json::json!(file_metadata.updated_at.timestamp()));
+
+        chunk_item.metadata.custom = serde_json::Value::Object(custom_map);
     }
 
-    // Use EmbeddingEngine for batch embedding
-    let engine = crate::embeddings::EmbeddingEngine::new(workspace.to_path_buf());
-    let embeddings = engine.embed_chunks(base_name, &chunks, None).await?;
-    
     let chunks_count = chunks.len() as u32;
+    progress.chunk(1, Some(1), chunks_count);
 
-    // Convert to KnowledgeChunk with embeddings and insert
-    for (chunk_item, embedding) in chunks.into_iter().zip(embeddings) {
+    Ok((source_id, chunks, size_bytes))
+}
+
+/// Process a batch of files: embed all chunks at once and insert in batch.
+async fn process_batch(
+    workspace: &Path,
+    base_name: &str,
+    index: &mut dyn vector_index::VectorIndex,
+    config: &KnowledgeBaseConfig,
+    source_manager: &rag::SourceManager,
+    pending: &mut Vec<(String, Vec<chunk::Chunk>, PathBuf, u64)>,
+    progress: &progress::ProgressReporter,
+) -> AppResult<(u32, u32, u64)> {
+    if pending.is_empty() {
+        return Ok((0, 0, 0));
+    }
+
+    // Collect all chunks from all files in batch
+    let mut all_chunks = Vec::new();
+    let mut chunk_to_source: Vec<usize> = Vec::new(); // Maps chunk index to source index
+    
+    for (idx, (_source_id, chunks, _path, _bytes)) in pending.iter().enumerate() {
+        for _ in chunks {
+            chunk_to_source.push(idx);
+        }
+        all_chunks.extend(chunks.clone());
+    }
+
+    let total_chunks = all_chunks.len();
+    
+    // Batch embedding - single call for all chunks
+    let engine = crate::embeddings::EmbeddingEngine::new(workspace.to_path_buf());
+    let embeddings = engine.embed_chunks(base_name, &all_chunks, None).await?;
+    progress.embed(total_chunks as u64, Some(total_chunks as u64), &config.model);
+
+    // Batch insert - collect all KnowledgeChunks first
+    let mut knowledge_chunks = Vec::new();
+    for (chunk_item, embedding) in all_chunks.into_iter().zip(embeddings) {
         let knowledge_chunk = KnowledgeChunk {
             id: chunk_item.id,
             source_id: chunk_item.source_id,
@@ -205,27 +288,81 @@ async fn process_file(
             embedding: Some(embedding),
             metadata: serde_json::to_value(&chunk_item.metadata)?,
         };
-
-        index.upsert_chunk(&knowledge_chunk)?;
+        knowledge_chunks.push(knowledge_chunk);
     }
 
-    tracing::debug!(
-        "Processed {:?}: {} chunks, {} bytes",
-        path,
-        chunks_count,
-        size_bytes
-    );
+    // Batch upsert
+    index.upsert_chunks(&knowledge_chunks)?;
+    progress.index(total_chunks as u64, Some(total_chunks as u64));
 
-    Ok((source_id, chunks_count, size_bytes))
+    // Track sources
+    let mut sources_count = 0u32;
+    let mut chunks_count = 0u32;
+    let mut bytes_processed = 0u64;
+    
+    for (source_id, chunks, path, byte_count) in pending.drain(..) {
+        let source = KnowledgeSource {
+            source_id,
+            path: path.to_string_lossy().to_string(),
+            source_type: "file".to_string(),
+            indexed_at: chrono::Utc::now(),
+            chunk_count: chunks.len() as u32,
+            byte_count,
+        };
+        source_manager.track_source(&source)?;
+        
+        sources_count += 1;
+        chunks_count += chunks.len() as u32;
+        bytes_processed += byte_count;
+    }
+
+    Ok((sources_count, chunks_count, bytes_processed))
 }
 
 /// Check if a file should be included based on patterns.
 fn should_include(path: &Path, options: &LearnOptions) -> bool {
     let path_str = path.to_string_lossy();
 
-    // Check excludes first
+    // Default exclusions (always applied)
+    const DEFAULT_EXCLUDES: &[&str] = &[
+        "/.git/",
+        "/.svn/",
+        "/.hg/",
+        "/node_modules/",
+        "/.next/",
+        "/dist/",
+        "/build/",
+        "/target/",
+        "/.venv/",
+        "/__pycache__/",
+        "/.pytest_cache/",
+        "/.mypy_cache/",
+        "/vendor/",
+        "/.idea/",
+        "/.vscode/",
+        "/.DS_Store",
+        ".min.js",
+        ".min.css",
+        ".map",
+        ".lock",
+        ".log",
+        ".tmp",
+        ".temp",
+        ".cache",
+    ];
+
+    // Check default exclusions
+    for pattern in DEFAULT_EXCLUDES {
+        if path_str.contains(pattern) {
+            tracing::debug!("Excluding file (default pattern '{}'): {:?}", pattern, path);
+            return false;
+        }
+    }
+
+    // Check user-provided excludes
     for pattern in &options.exclude {
         if path_str.contains(pattern) {
+            tracing::debug!("Excluding file (user pattern '{}'): {:?}", pattern, path);
             return false;
         }
     }
@@ -237,6 +374,7 @@ fn should_include(path: &Path, options: &LearnOptions) -> bool {
                 return true;
             }
         }
+        tracing::debug!("Excluding file (no include match): {:?}", path);
         return false;
     }
 

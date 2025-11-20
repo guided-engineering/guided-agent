@@ -7,8 +7,8 @@ llm:
   activeProvider: ollama
   
   # Active embedding provider
-  # Options: openai, ollama, gguf-local
-  activeEmbeddingProvider: ollama
+  # Options: openai, ollama, gguf-local, trigram
+  activeEmbeddingProvider: trigram
   
   # Provider-specific configurations
   providers:
@@ -38,7 +38,7 @@ llm:
       # Ollama server endpoint
       endpoint: http://localhost:11434
       # Default model for completions
-      model: llama3
+      model: qwen2.5-coder:0.5b
       # Default model for embeddings
       embeddingModel: nomic-embed-text
       # Connection timeout in seconds

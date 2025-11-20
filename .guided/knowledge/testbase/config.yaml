@@ -1,7 +1,0 @@
-name: testbase
-provider: ollama
-model: nomic-embed-text
-chunk_size: 512
-chunk_overlap: 64
-max_context_tokens: 2048
-embedding_dim: 384

@@ -16,6 +16,15 @@ pub trait VectorIndex: Send + Sync {
     /// Insert or update a chunk with its embedding in the index.
     fn upsert_chunk(&mut self, chunk: &KnowledgeChunk) -> AppResult<()>;
 
+    /// Insert or update multiple chunks in batch (more efficient).
+    fn upsert_chunks(&mut self, chunks: &[KnowledgeChunk]) -> AppResult<()> {
+        // Default implementation: fall back to individual upserts
+        for chunk in chunks {
+            self.upsert_chunk(chunk)?;
+        }
+        Ok(())
+    }
+
     /// Search for the top-k most similar chunks to the query embedding.
     ///
     /// Returns chunks ordered by descending similarity score.

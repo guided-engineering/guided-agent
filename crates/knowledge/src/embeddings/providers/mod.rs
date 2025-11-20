@@ -1,3 +1,4 @@
 //! Provider implementations.
 
-pub mod mock;
+pub mod ollama;
+pub mod trigram;

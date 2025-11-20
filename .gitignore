@@ -4,6 +4,9 @@
 /release/
 /dist/
 /build/
+/tests/
+
+.guided/knowledge
 
 # Cargo
 **/*.rs.bk

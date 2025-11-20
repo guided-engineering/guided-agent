@@ -1,3 +1,0 @@
-$c57b88de-26ab-43e5-891a-bd136d57fe69²Ý"id ÿÿÿÿÿÿÿÿÿ*string8Zdefault+	source_id ÿÿÿÿÿÿÿÿÿ*string8Zdefault*position ÿÿÿÿÿÿÿÿÿ*uint328Zdefault&text ÿÿÿÿÿÿÿÿÿ*string8Zdefault>	embedding ÿÿÿÿÿÿÿÿÿ*fixed_size_list:float:3848Zdefault*metadata ÿÿÿÿÿÿÿÿÿ*string8Zdefault"!
-lance.auto_cleanup.interval20"'
-lance.auto_cleanup.older_than14days

@@ -3,6 +3,7 @@
 //! Retrieves relevant chunks and generates natural language answers via LLM.
 
 use crate::chunk::ChunkMetadata;
+use crate::rag::search::{detect_query_filters, SearchFilters};
 use crate::rag::types::{RagResponse, RagSourceRef, CONFIDENCE_THRESHOLD};
 use crate::types::{AskOptions, KnowledgeChunk};
 use crate::{config, lancedb_index, vector_index::VectorIndex};
@@ -12,7 +13,9 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// Minimum cosine similarity score for a chunk to be considered relevant.
-const MIN_RELEVANCE_SCORE: f32 = 0.20;
+/// Note: 0.08 is suitable for trigram embeddings (lower semantic accuracy);
+/// production systems with neural embeddings should use 0.3-0.5.
+const MIN_RELEVANCE_SCORE: f32 = 0.08;
 
 /// Maximum snippet length for source references.
 const MAX_SNIPPET_LENGTH: usize = 150;
@@ -69,15 +72,28 @@ pub async fn ask_rag(
         results.len()
     );
 
+    // Detect query intent and apply automatic filters
+    let auto_filters = detect_query_filters(&options.query);
+    
     // Apply relevance cutoff
-    let filtered_results: Vec<_> = results
+    let mut filtered_results: Vec<_> = results
         .into_iter()
         .filter(|(_chunk, score)| *score >= MIN_RELEVANCE_SCORE)
         .collect();
 
+    // Apply automatic metadata filters if detected
+    if auto_filters.has_filters() {
+        tracing::debug!(
+            "Applying automatic filters: file_types={:?}, languages={:?}",
+            auto_filters.file_types,
+            auto_filters.languages
+        );
+        filtered_results = auto_filters.apply(filtered_results);
+    }
+
     if filtered_results.is_empty() {
         tracing::info!(
-            "No relevant chunks found (all scores below {:.2} threshold)",
+            "No relevant chunks found (all scores below {:.2} threshold or filtered out)",
             MIN_RELEVANCE_SCORE
         );
         return Ok(RagResponse::no_information(&options.query));
@@ -127,9 +143,38 @@ fn build_context(chunks: &[KnowledgeChunk]) -> AppResult<String> {
         .iter()
         .enumerate()
         .map(|(i, chunk)| {
+            // Extract metadata from chunk
+            let metadata_info = if let Ok(metadata) = serde_json::from_value::<ChunkMetadata>(chunk.metadata.clone()) {
+                if let Some(custom) = metadata.custom.as_object() {
+                    let mut info = String::new();
+                    
+                    // Source path
+                    if let Some(source_path) = custom.get("source_path").and_then(|v| v.as_str()) {
+                        info.push_str(&format!("File: {}\n", source_path));
+                    }
+                    
+                    // File size
+                    if let Some(file_size) = custom.get("file_size_bytes").and_then(|v| v.as_u64()) {
+                        info.push_str(&format!("Size: {} bytes\n", file_size));
+                    }
+                    
+                    // Line count
+                    if let Some(line_count) = custom.get("file_line_count").and_then(|v| v.as_u64()) {
+                        info.push_str(&format!("Lines: {}\n", line_count));
+                    }
+                    
+                    info
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+
             format!(
-                "[Document {}]\n{}",
+                "[Document {}]\n{}Content:\n{}",
                 i + 1,
+                metadata_info,
                 chunk.text
             )
         })
@@ -164,7 +209,7 @@ async fn generate_answer(
     // Create request
     let request = LlmRequest::new(user_prompt, "llama3")
         .with_system(system_prompt)
-        .with_temperature(0.3) // Lower temperature for factual answers
+        .with_temperature(0.1) // Very low temperature to reduce hallucination
         .with_max_tokens(1000);
 
     // Send request
@@ -190,15 +235,18 @@ fn build_system_prompt(low_confidence: bool) -> String {
     }
 
     prompt.push_str(
-        "Instructions:\n\
-         - Provide a clear, direct answer based only on the context provided\n\
-         - Do not mention technical terms like \"chunks\", \"embeddings\", \"context\", \"documents\", \"Document 1\", \"Document 2\", etc., or \"RAG\"\n\
-         - Do not use phrases like \"Based on the provided information\", \"According to the context\", \"According to Document X\", or \"De acordo com o Documento X\"\n\
-         - Answer as if you had read the original documents directly without referring to document numbers\n\
-         - Simply state the facts from the documents without saying where they came from\n\
-         - If the context suggests but does not confirm something, express that nuance clearly\n\
-         - If the context does not contain the answer, state: \"I could not find this information in the available documents.\"\n\
-         - Keep your response concise and factual\n"
+        "CRITICAL RULES - YOU MUST FOLLOW THESE:\n\
+         1. Answer ONLY using information explicitly present in the context\n\
+         2. If the answer is not in the context, you MUST say: \"I could not find this information in the available documents.\"\n\
+         3. DO NOT invent, assume, guess, or infer ANY information\n\
+         4. DO NOT mention files, functions, variables, or details that are not explicitly shown in the context\n\
+         5. If asked about file sizes, comparisons, or metadata not in the context, say you don't have that information\n\n\
+         Communication style:\n\
+         - Do not use phrases like \"Based on the provided information\", \"According to the context\", \"De acordo com o Documento X\"\n\
+         - Do not mention technical terms like \"chunks\", \"embeddings\", \"documents\", \"Document 1\", or \"RAG\"\n\
+         - Answer naturally as if you had read the original documents\n\
+         - Simply state facts without saying where they came from\n\
+         - Be concise and factual\n"
     );
 
     prompt

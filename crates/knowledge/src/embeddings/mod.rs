@@ -55,7 +55,7 @@ impl EmbeddingEngine {
             config.dimensions
         );
 
-        let provider = provider::create_provider(&config, api_key)?;
+        let provider = provider::create_provider(&config, api_key).await?;
 
         // Cache it
         {
@@ -133,13 +133,13 @@ mod tests {
     use tempfile::TempDir;
 
     #[tokio::test]
-    async fn test_embedding_engine_mock_provider() {
+    async fn test_embedding_engine_trigram_provider() {
         let temp = TempDir::new().unwrap();
         let engine = EmbeddingEngine::new(temp.path().to_path_buf());
 
         // Create base config
         let config = EmbeddingConfig {
-            provider: "mock".to_string(),
+            provider: "trigram".to_string(),
             model: "trigram-v1".to_string(),
             dimensions: 384,
             normalize: true,
@@ -166,7 +166,7 @@ mod tests {
         let engine = EmbeddingEngine::new(temp.path().to_path_buf());
 
         let config = EmbeddingConfig {
-            provider: "mock".to_string(),
+            provider: "trigram".to_string(),
             model: "trigram-v1".to_string(),
             dimensions: 384,
             normalize: true,

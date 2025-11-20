@@ -58,7 +58,7 @@ impl Default for KnowledgeBaseConfig {
             chunk_size: default_chunk_size(),
             chunk_overlap: default_chunk_overlap(),
             max_context_tokens: default_max_context_tokens(),
-            embedding_dim: default_embedding_dim(),
+            embedding_dim: 768, // nomic-embed-text dimensions
         }
     }
 }
@@ -129,6 +129,12 @@ pub struct LearnOptions {
 
     /// Reset the base before learning
     pub reset: bool,
+
+    /// Embedding provider (optional, uses config or default if not specified)
+    pub provider: Option<String>,
+
+    /// Embedding model (optional, uses config or default if not specified)
+    pub model: Option<String>,
 }
 
 /// Statistics from a learn operation.

@@ -8,7 +8,7 @@ use std::path::Path;
 /// Embedding configuration for a knowledge base.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EmbeddingConfig {
-    /// Provider name: "mock", "openai", "ollama", "gguf"
+    /// Provider name: "trigram", "openai", "ollama", "gguf"
     pub provider: String,
 
     /// Model identifier (provider-specific)
@@ -41,7 +41,7 @@ fn default_batch_size() -> usize {
 impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
-            provider: "mock".to_string(),
+            provider: "trigram".to_string(),
             model: "trigram-v1".to_string(),
             dimensions: 384,
             normalize: true,
@@ -166,7 +166,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = EmbeddingConfig::default();
-        assert_eq!(config.provider, "mock");
+        assert_eq!(config.provider, "trigram");
         assert_eq!(config.model, "trigram-v1");
         assert_eq!(config.dimensions, 384);
         assert!(config.normalize);
@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn test_validate_consistency_success() {
         let config1 = EmbeddingConfig {
-            provider: "mock".to_string(),
+            provider: "trigram".to_string(),
             model: "trigram-v1".to_string(),
             dimensions: 384,
             normalize: true,

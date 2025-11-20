@@ -2,7 +2,11 @@
 
 use crate::types::KnowledgeChunk;
 use crate::vector_index::VectorIndex;
-use arrow_array::{FixedSizeListArray, RecordBatch, RecordBatchIterator, StringArray, UInt32Array};
+use arrow_array::{
+    Array, FixedSizeListArray, Int64Array, ListArray, RecordBatch, RecordBatchIterator,
+    StringArray, UInt32Array, UInt64Array,
+};
+use arrow_buffer::OffsetBuffer;
 use arrow_schema::{DataType, Field, Schema};
 use guided_core::{AppError, AppResult};
 use lancedb::query::{ExecutableQuery, QueryBase};
@@ -76,9 +80,10 @@ impl LanceDbIndex {
         })
     }
 
-    /// Create Arrow schema for chunks table.
+    /// Create Arrow schema for chunks table with structured metadata (Phase 5.5.1).
     fn create_schema(embedding_dim: usize) -> Arc<Schema> {
         Arc::new(Schema::new(vec![
+            // Core fields
             Field::new("id", DataType::Utf8, false),
             Field::new("source_id", DataType::Utf8, false),
             Field::new("position", DataType::UInt32, false),
@@ -91,6 +96,23 @@ impl LanceDbIndex {
                 ),
                 false,
             ),
+            // Structured metadata fields (Phase 5.5.1)
+            Field::new("source_path", DataType::Utf8, true),
+            Field::new("file_name", DataType::Utf8, true),
+            Field::new("file_type", DataType::Utf8, true),
+            Field::new("language", DataType::Utf8, true),
+            Field::new("file_size_bytes", DataType::UInt64, true),
+            Field::new("file_line_count", DataType::UInt64, true),
+            Field::new("file_modified_at", DataType::Int64, true), // Unix timestamp
+            Field::new("content_hash", DataType::Utf8, true),
+            Field::new(
+                "tags",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+                true,
+            ),
+            Field::new("created_at", DataType::Int64, true), // Unix timestamp
+            Field::new("updated_at", DataType::Int64, true), // Unix timestamp
+            // Legacy metadata field for backward compatibility
             Field::new("metadata", DataType::Utf8, false),
         ]))
     }
@@ -115,12 +137,11 @@ impl LanceDbIndex {
         let metadata_json = serde_json::to_string(&chunk.metadata)
             .map_err(|e| AppError::Knowledge(format!("Failed to serialize metadata: {}", e)))?;
 
-        // Create arrays
+        // Create core arrays
         let id_array = StringArray::from(vec![chunk.id.as_str()]);
         let source_id_array = StringArray::from(vec![chunk.source_id.as_str()]);
         let position_array = UInt32Array::from(vec![chunk.position]);
         let text_array = StringArray::from(vec![chunk.text.as_str()]);
-        let metadata_array = StringArray::from(vec![metadata_json.as_str()]);
 
         // Create embedding as FixedSizeListArray
         let embedding_values = arrow_array::Float32Array::from(embedding.clone());
@@ -131,14 +152,117 @@ impl LanceDbIndex {
             None,
         );
 
+        // Extract structured metadata from chunk.metadata JSON
+        let source_path = chunk
+            .metadata
+            .get("source_path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let file_name = chunk
+            .metadata
+            .get("file_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let file_type = chunk
+            .metadata
+            .get("file_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let language = chunk
+            .metadata
+            .get("language")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let file_size_bytes = chunk
+            .metadata
+            .get("file_size_bytes")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let file_line_count = chunk
+            .metadata
+            .get("file_line_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let file_modified_at = chunk
+            .metadata
+            .get("file_modified_at")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let content_hash = chunk
+            .metadata
+            .get("content_hash")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let created_at = chunk
+            .metadata
+            .get("created_at")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let updated_at = chunk
+            .metadata
+            .get("updated_at")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+
+        // Create structured metadata arrays
+        let source_path_array = StringArray::from(vec![source_path]);
+        let file_name_array = StringArray::from(vec![file_name]);
+        let file_type_array = StringArray::from(vec![file_type]);
+        let language_array = StringArray::from(vec![language]);
+        let file_size_bytes_array = UInt64Array::from(vec![file_size_bytes]);
+        let file_line_count_array = UInt64Array::from(vec![file_line_count]);
+        let file_modified_at_array = Int64Array::from(vec![file_modified_at]);
+        let content_hash_array = StringArray::from(vec![content_hash]);
+        let created_at_array = Int64Array::from(vec![created_at]);
+        let updated_at_array = Int64Array::from(vec![updated_at]);
+
+        // Create tags array (List of strings)
+        let tags: Vec<Option<&str>> = chunk
+            .metadata
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let tags_values = StringArray::from(tags);
+        let tags_count = tags_values.len();
+        let tags_offsets = vec![0_i32, tags_count as i32];
+        let tags_array = ListArray::try_new(
+            Arc::new(Field::new("item", DataType::Utf8, true)),
+            OffsetBuffer::new(tags_offsets.into()),
+            Arc::new(tags_values),
+            None,
+        )
+        .map_err(|e| AppError::Knowledge(format!("Failed to create tags array: {}", e)))?;
+
+        // Legacy metadata field
+        let metadata_array = StringArray::from(vec![metadata_json.as_str()]);
+
         RecordBatch::try_new(
             schema,
             vec![
+                // Core fields
                 Arc::new(id_array),
                 Arc::new(source_id_array),
                 Arc::new(position_array),
                 Arc::new(text_array),
                 Arc::new(embedding_array),
+                // Structured metadata
+                Arc::new(source_path_array),
+                Arc::new(file_name_array),
+                Arc::new(file_type_array),
+                Arc::new(language_array),
+                Arc::new(file_size_bytes_array),
+                Arc::new(file_line_count_array),
+                Arc::new(file_modified_at_array),
+                Arc::new(content_hash_array),
+                Arc::new(tags_array),
+                Arc::new(created_at_array),
+                Arc::new(updated_at_array),
+                // Legacy metadata
                 Arc::new(metadata_array),
             ],
         )
@@ -194,8 +318,9 @@ impl LanceDbIndex {
             .map(|i| embedding_values.value(i))
             .collect();
 
+        // Read legacy metadata field (now at column 16)
         let metadata_json = batch
-            .column(5)
+            .column(16)
             .as_any()
             .downcast_ref::<StringArray>()
             .ok_or_else(|| AppError::Knowledge("Invalid metadata column".to_string()))?
@@ -240,6 +365,51 @@ impl VectorIndex for LanceDbIndex {
         Ok(())
     }
 
+    fn upsert_chunks(&mut self, chunks: &[KnowledgeChunk]) -> AppResult<()> {
+        if chunks.is_empty() {
+            return Ok(());
+        }
+
+        // Track all source IDs
+        for chunk in chunks {
+            self.source_ids.insert(chunk.source_id.clone());
+        }
+
+        // Convert all chunks to a single RecordBatch
+        let batches: Vec<RecordBatch> = chunks
+            .iter()
+            .map(|chunk| self.chunk_to_batch(chunk))
+            .collect::<AppResult<Vec<_>>>()?;
+
+        // Combine batches if needed
+        let combined_batch = if batches.len() == 1 {
+            batches.into_iter().next().unwrap()
+        } else {
+            // Concatenate multiple batches
+            let schema = batches[0].schema();
+            arrow_select::concat::concat_batches(&schema, &batches)
+                .map_err(|e| AppError::Knowledge(format!("Failed to concat batches: {}", e)))?
+        };
+
+        // Single insert operation for all chunks
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                self.table
+                    .add(RecordBatchIterator::new(
+                        vec![Ok(combined_batch.clone())],
+                        combined_batch.schema(),
+                    ))
+                    .execute()
+                    .await
+                    .map_err(|e| AppError::Knowledge(format!("Failed to add chunks batch: {}", e)))?;
+                Ok::<(), AppError>(())
+            })
+        })?;
+
+        tracing::debug!("Batch inserted {} chunks into LanceDB", chunks.len());
+        Ok(())
+    }
+
     fn search(
         &self,
         query_embedding: &[f32],
@@ -275,17 +445,31 @@ impl VectorIndex for LanceDbIndex {
         let mut chunks_with_scores = Vec::new();
 
         // Process batches
-        for batch in batches {
+        tracing::debug!("Processing {} batches from LanceDB", batches.len());
+        for (batch_idx, batch) in batches.iter().enumerate() {
+            tracing::debug!("Batch {} has {} rows", batch_idx, batch.num_rows());
             for row_idx in 0..batch.num_rows() {
-                let chunk = self.batch_to_chunk(&batch, row_idx)?;
+                tracing::debug!("Processing row {} of batch {}", row_idx, batch_idx);
+                let chunk = match self.batch_to_chunk(batch, row_idx) {
+                    Ok(c) => {
+                        tracing::debug!("Successfully converted row {} to chunk", row_idx);
+                        c
+                    },
+                    Err(e) => {
+                        tracing::warn!("Failed to convert batch row {} to chunk: {}", row_idx, e);
+                        continue;
+                    }
+                };
 
                 // Calculate cosine similarity score
                 let score = if let Some(embedding) = &chunk.embedding {
                     cosine_similarity(query_embedding, embedding)
                 } else {
+                    tracing::warn!("Chunk has no embedding - score will be 0.0");
                     0.0
                 };
 
+                tracing::debug!("Chunk '{}' score: {:.4}", chunk.text.chars().take(50).collect::<String>(), score);
                 chunks_with_scores.push((chunk, score));
             }
         }

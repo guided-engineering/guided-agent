@@ -29,30 +29,32 @@ pub trait EmbeddingProvider: Send + Sync + std::fmt::Debug {
 }
 
 /// Create an embedding provider based on configuration.
-pub fn create_provider(
+pub async fn create_provider(
     config: &EmbeddingConfig,
     _api_key: Option<&str>,
 ) -> AppResult<Arc<dyn EmbeddingProvider>> {
     match config.provider.as_str() {
-        "mock" => {
-            let provider = super::providers::mock::MockProvider::new(config.dimensions);
+        "trigram" | "mock" => {
+            // Accept both "trigram" and "mock" (for backward compatibility)
+            let provider = super::providers::trigram::TrigramProvider::new(config.dimensions);
+            Ok(Arc::new(provider))
+        }
+
+        "ollama" => {
+            let provider = super::providers::ollama::OllamaProvider::new(config.clone()).await?;
             Ok(Arc::new(provider))
         }
 
         "openai" => Err(AppError::Knowledge(
-            "OpenAI provider not yet implemented. Use 'mock' provider for now.".to_string(),
-        )),
-
-        "ollama" => Err(AppError::Knowledge(
-            "Ollama provider not yet implemented. Use 'mock' provider for now.".to_string(),
+            "OpenAI provider not yet implemented. Use 'trigram' or 'ollama' provider.".to_string(),
         )),
 
         "gguf" => Err(AppError::Knowledge(
-            "GGUF provider not yet implemented. Use 'mock' provider for now.".to_string(),
+            "GGUF provider not yet implemented. Use 'trigram' or 'ollama' provider.".to_string(),
         )),
 
         _ => Err(AppError::Knowledge(format!(
-            "Unknown embedding provider: '{}'. Supported providers: mock, openai, ollama, gguf",
+            "Unknown embedding provider: '{}'. Supported providers: trigram, ollama, openai, gguf",
             config.provider
         ))),
     }
@@ -62,10 +64,10 @@ pub fn create_provider(
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_create_mock_provider() {
+    #[tokio::test]
+    async fn test_create_trigram_provider() {
         let config = EmbeddingConfig {
-            provider: "mock".to_string(),
+            provider: "trigram".to_string(),
             model: "trigram-v1".to_string(),
             dimensions: 384,
             normalize: true,
@@ -73,14 +75,14 @@ mod tests {
             provider_config: serde_json::json!({}),
         };
 
-        let provider = create_provider(&config, None).unwrap();
-        assert_eq!(provider.provider_name(), "mock");
+        let provider = create_provider(&config, None).await.unwrap();
+        assert_eq!(provider.provider_name(), "trigram");
         assert_eq!(provider.model_name(), "trigram-v1");
         assert_eq!(provider.dimensions(), 384);
     }
 
-    #[test]
-    fn test_create_unknown_provider() {
+    #[tokio::test]
+    async fn test_create_unknown_provider() {
         let config = EmbeddingConfig {
             provider: "unknown".to_string(),
             model: "test".to_string(),
@@ -90,7 +92,7 @@ mod tests {
             provider_config: serde_json::json!({}),
         };
 
-        let result = create_provider(&config, None);
+        let result = create_provider(&config, None).await;
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -101,7 +103,7 @@ mod tests {
     #[tokio::test]
     async fn test_provider_embed_single() {
         let config = EmbeddingConfig::default();
-        let provider = create_provider(&config, None).unwrap();
+        let provider = create_provider(&config, None).await.unwrap();
 
         let embedding = provider.embed("test text").await.unwrap();
         assert_eq!(embedding.len(), 384);

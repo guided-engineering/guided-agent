@@ -429,10 +429,17 @@ This document lists and describes the main **domain entities** of the Guided Age
 
 **Fields:**
 
-* `prompt: String`
-* `knowledgeBase: Option<String>`
-* `stream: bool`
-* `json: bool`
+* `prompt: Option<String>` — Positional question text
+* `prompt_flag: Option<String>` — Explicit --prompt flag
+* `file: Option<PathBuf>` — Read prompt from file
+* `knowledge_base: Option<String>` — Knowledge base name
+* `with_workspace: bool` — Include workspace context
+* `stream: bool` — Enable streaming (default: true)
+* `no_stream: bool` — Disable streaming
+* `max_tokens: Option<u32>` — Response token limit
+* `temperature: Option<f32>` — Generation temperature
+* `format: String` — Output format (default: markdown)
+* `json: bool` — Output as JSON
 
 ---
 

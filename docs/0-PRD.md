@@ -135,31 +135,78 @@ It complements the PRD and establishes the engineering-level contract for the im
 [Parse args]
      |
      v
-[Load prompt definition]
+[Load prompt definition (agent.ask.default)]
      |
      v
-[Resolve workspace context]
+[Override context settings (--with-workspace, --knowledge-base)]
      |
      v
-[Retrieve knowledge chunks]
+[Retrieve knowledge chunks (if requested)]
      |
      v
-[Build final prompt]
+[Build final prompt (Handlebars + context injection)]
      |
      v
-[Send request to LLM]
+[Create LLM client via factory]
      |
      v
-[Stream result -> stdout]
+[Create LLM request from built prompt]
+     |
+     v
+[Execute: streaming or non-streaming]
+     |
+     v
+[Output to stdout (plain text or JSON)]
+     |
+     v
+[Log metadata to stderr (if verbose)]
 ```
 
 ### Requirements
 
-* Supports streaming.
-* Supports `--json` mode.
-* Supports optional `--knowledge-base <name>`.
+* Supports streaming (default) and non-streaming (`--no-stream`).
+* Supports `--json` mode with structured output.
+* Supports optional `--knowledge-base <name>` (stub in Phase 4, full RAG in Phase 5).
+* Supports `--with-workspace` for file tree context injection.
+* Supports `--file` for reading prompts from files.
+* Supports `--max-tokens` and `--temperature` for generation control.
 * Uses prompt builder exclusively.
-* Never logs to stdout.
+* Never logs to stdout (only results).
+* All logs and errors go to stderr.
+
+### CLI Options
+
+* `prompt` (positional) — Question text
+* `--prompt` — Question text (explicit flag)
+* `--file`, `-f` — Read prompt from file
+* `--knowledge-base`, `-k` — Knowledge base name
+* `--with-workspace` — Include workspace file tree
+* `--stream` (default: true) — Enable streaming
+* `--no-stream` — Disable streaming
+* `--json` — Output as structured JSON
+* `--max-tokens` — Maximum response tokens
+* `--temperature` — Generation temperature (0.0-2.0)
+* `--format`, `-o` — Output format
+
+### JSON Output Format
+
+```json
+{
+  "answer": "Response text",
+  "model": "llama3",
+  "provider": "ollama",
+  "usage": {
+    "promptTokens": 67,
+    "completionTokens": 16,
+    "totalTokens": 83
+  },
+  "metadata": {
+    "promptId": "agent.ask.default",
+    "workspaceContext": false,
+    "knowledgeBase": null
+  }
+}
+```
 
 ---
 

@@ -12,8 +12,9 @@ This data dictionary defines **commands, options, and entities** used in the Gui
 
 **Syntax:**
 
-* `guided-agent ask [GLOBAL_OPTIONS] [OPTIONS] --prompt <TEXT>`
 * `guided-agent ask [GLOBAL_OPTIONS] [OPTIONS] "<TEXT>"`
+* `guided-agent ask [GLOBAL_OPTIONS] [OPTIONS] --prompt "<TEXT>"`
+* `guided-agent ask [GLOBAL_OPTIONS] [OPTIONS] --file <PATH>`
 
 **Global Options (shared):**
 
@@ -27,21 +28,54 @@ This data dictionary defines **commands, options, and entities** used in the Gui
 
 **Ask Options:**
 
-* `-p, --prompt <TEXT>` — Question text. Mapped to `AskCommand.prompt`.
-* `--file <PATH>` — Read prompt from file.
-* `-k, --knowledge-base <NAME>` — Knowledge base to use as context. Maps to `AskCommand.knowledgeBase`.
-* `--stream` / `--no-stream` — Enable/disable streaming. Maps to `AskCommand.stream`.
-* `--max-tokens <N>` — Response token limit.
-* `--temperature <FLOAT>` — Creativity level.
-* `--json` — Output answer + metadata as JSON.
+* `<PROMPT>` (positional) — Question text. Maps to `AskCommand.prompt`.
+* `--prompt <TEXT>` — Question text (explicit flag). Conflicts with positional. Maps to `AskCommand.prompt_flag`.
+* `--file <PATH>`, `-f` — Read prompt from file. Maps to `AskCommand.file`.
+* `--knowledge-base <NAME>`, `-k` — Knowledge base to use as context. Maps to `AskCommand.knowledge_base`.
+* `--with-workspace` — Include workspace file tree in context. Maps to `AskCommand.with_workspace`.
+* `--stream` — Enable streaming (default: true). Maps to `AskCommand.stream`.
+* `--no-stream` — Disable streaming. Conflicts with `--stream`. Maps to `AskCommand.no_stream`.
+* `--max-tokens <N>` — Response token limit. Maps to `AskCommand.max_tokens`.
+* `--temperature <FLOAT>` — Creativity level (0.0-2.0). Maps to `AskCommand.temperature`.
+* `--format <FORMAT>`, `-o` — Output format. Default: markdown. Maps to `AskCommand.format`.
+* `--json` — Output answer + metadata as JSON. Maps to `AskCommand.json`.
+
+**Prompt Resolution Priority:**
+1. Positional argument: `guided ask "text"`
+2. Explicit flag: `--prompt "text"`
+3. File input: `--file path.txt`
 
 **Entity Mappings:**
 
 * CLI: `AskCommand`
 * Prompt: `PromptDefinition` (e.g. `agent.ask.default`)
-* Builder output: `BuiltPrompt`
-* LLM: `LlmRequest`, `LlmResponse`, `LlmStreamChunk`
-* Knowledge (optional): `KnowledgeChunk`, `AskOptions`
+* Builder output: `BuiltPrompt`, `BuiltPromptMetadata`
+* LLM: `LlmRequest`, `LlmResponse`, `LlmStreamChunk`, `Usage`
+* Knowledge (optional): `KnowledgeChunk` (Phase 5)
+
+**Output Modes:**
+
+* **Plain Text (default):** Streams or buffers answer to stdout, logs to stderr.
+* **JSON:** Structured output with answer, model, provider, usage, metadata.
+
+**JSON Schema:**
+```json
+{
+  "answer": "string",
+  "model": "string",
+  "provider": "string",
+  "usage": {
+    "promptTokens": "number",
+    "completionTokens": "number",
+    "totalTokens": "number"
+  },
+  "metadata": {
+    "promptId": "string",
+    "workspaceContext": "boolean",
+    "knowledgeBase": "string | null"
+  }
+}
+```
 
 ---
 

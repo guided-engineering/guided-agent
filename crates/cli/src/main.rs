@@ -32,6 +32,10 @@ struct Cli {
     #[arg(short, long, global = true)]
     verbose: bool,
 
+    /// Quiet mode: suppress logs, show only output
+    #[arg(short = 'q', long, global = true)]
+    quiet: bool,
+
     /// Disable colored output
     #[arg(long, global = true, env = "NO_COLOR")]
     no_color: bool,
@@ -82,8 +86,15 @@ async fn main() -> AppResult<()> {
         cli.no_color,
     );
 
+    // Determine effective log level (quiet overrides everything)
+    let effective_log_level = if cli.quiet {
+        Some("error")
+    } else {
+        config.log_level.as_deref()
+    };
+
     // Initialize logging with final configuration
-    logging::init_logging(config.log_level.as_deref(), config.no_color)?;
+    logging::init_logging(effective_log_level, config.no_color)?;
 
     // Log startup
     tracing::info!("Guided Agent CLI starting");

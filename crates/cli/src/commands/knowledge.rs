@@ -125,7 +125,12 @@ impl KnowledgeAskCommand {
         let api_key = config.resolve_api_key(&config.provider).ok().flatten();
 
         // Use RAG answering (LLM synthesis)
-        let response = guided_knowledge::rag::ask::ask_rag(&config.workspace, options, api_key.as_deref()).await?;
+        let response = guided_knowledge::rag::ask::ask_rag(
+            &config.workspace,
+            options,
+            &config.provider,
+            api_key.as_deref()
+        ).await?;
 
         // Log diagnostic info
         tracing::debug!(

@@ -28,6 +28,7 @@ const MAX_SNIPPET_LENGTH: usize = 150;
 pub async fn ask_rag(
     workspace: &Path,
     options: AskOptions,
+    llm_provider: &str,
     api_key: Option<&str>,
 ) -> AppResult<RagResponse> {
     tracing::info!(
@@ -106,7 +107,7 @@ pub async fn ask_rag(
 
     // Generate answer via LLM
     let answer = generate_answer(
-        &config.provider,
+        llm_provider,
         api_key,
         &options.query,
         &context,

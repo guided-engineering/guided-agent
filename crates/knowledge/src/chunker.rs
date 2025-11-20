@@ -21,7 +21,12 @@ pub fn chunk_text(
     let mut start = 0;
 
     while start < text.len() {
-        let end = (start + chunk_size).min(text.len());
+        // Find valid UTF-8 boundary for end position
+        let mut end = (start + chunk_size).min(text.len());
+        while end > start && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        
         let chunk_text = &text[start..end];
 
         // Skip chunks that are too small (< 10% of chunk_size)
@@ -48,7 +53,12 @@ pub fn chunk_text(
             chunk_size
         };
 
-        start += step;
+        // Find valid UTF-8 boundary for next start position
+        let mut next_start = start + step;
+        while next_start < text.len() && !text.is_char_boundary(next_start) {
+            next_start += 1;
+        }
+        start = next_start;
     }
 
     tracing::debug!(

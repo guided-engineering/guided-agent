@@ -2,7 +2,8 @@
 //!
 //! Provides local-first RAG using LanceDB vector index.
 
-pub mod chunker;
+pub mod chunk;
+pub mod chunker; // Deprecated: use chunk module instead
 pub mod config;
 pub mod lancedb_index;
 pub mod parser;
@@ -138,30 +139,35 @@ async fn process_file(
     // Create source
     let source_id = uuid::Uuid::new_v4().to_string();
 
-    // Chunk text
-    let candidates = chunker::chunk_text(
-        &source_id,
-        &text,
-        config.chunk_size as usize,
-        config.chunk_overlap as usize,
-    );
+    // Use new hybrid chunking pipeline
+    let chunk_config = chunk::ChunkConfig {
+        target_chunk_size: config.chunk_size as usize,
+        max_chunk_size: (config.chunk_size * 2) as usize,
+        min_chunk_size: (config.chunk_size / 10) as usize,
+        overlap: config.chunk_overlap as usize,
+        respect_semantics: true,
+        preserve_code_blocks: true,
+    };
+    
+    let pipeline = chunk::ChunkPipeline::new(chunk_config);
+    let chunks = pipeline.process(&source_id, &text, Some(path))?;
 
     let mut chunks_count = 0u32;
 
     // Embed and insert chunks
-    for candidate in candidates {
-        let embedding = generate_embedding(client, &config.model, &candidate.text).await?;
+    for chunk_item in chunks {
+        let embedding = generate_embedding(client, &config.model, &chunk_item.text).await?;
 
-        let chunk = KnowledgeChunk {
-            id: uuid::Uuid::new_v4().to_string(),
-            source_id: candidate.source_id.clone(),
-            position: candidate.position,
-            text: candidate.text,
+        let knowledge_chunk = KnowledgeChunk {
+            id: chunk_item.id,
+            source_id: chunk_item.source_id,
+            position: chunk_item.position,
+            text: chunk_item.text,
             embedding: Some(embedding),
-            metadata: candidate.metadata,
+            metadata: serde_json::to_value(&chunk_item.metadata)?,
         };
 
-        index.upsert_chunk(&chunk)?;
+        index.upsert_chunk(&knowledge_chunk)?;
         chunks_count += 1;
     }
 

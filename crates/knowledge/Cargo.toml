@@ -20,5 +20,22 @@ arrow-schema = "56.0"
 futures = "0.3"
 async-trait = "0.1"
 
+# Text splitting
+text-splitter = "0.18"
+
+# Code splitting (tree-sitter based)
+tree-sitter = "0.24"
+tree-sitter-rust = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-go = "0.23"
+
+# Unicode handling
+unicode-segmentation = "1.12"
+
+# Hashing
+sha2 = "0.10"
+
 [dev-dependencies]
 tempfile = "3.14"

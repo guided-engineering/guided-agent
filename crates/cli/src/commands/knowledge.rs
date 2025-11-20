@@ -72,7 +72,7 @@ impl KnowledgeLearnCommand {
 
         let api_key = config.resolve_api_key(&config.provider).ok().flatten();
 
-        let stats = guided_knowledge::learn(&config.workspace, options, api_key.as_deref()).await?;
+        let stats = guided_knowledge::learn(&config.workspace, &options, api_key.as_deref()).await?;
 
         if self.json {
             let output = serde_json::json!({

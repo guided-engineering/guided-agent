@@ -10,7 +10,7 @@ pub use config::EmbeddingConfig;
 pub use provider::{create_provider, EmbeddingProvider};
 
 use crate::chunk::Chunk;
-use guided_core::{AppError, AppResult};
+use guided_core::AppResult;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};

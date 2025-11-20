@@ -7,7 +7,7 @@ use crate::rag::types::{RagResponse, RagSourceRef, CONFIDENCE_THRESHOLD};
 use crate::types::{AskOptions, KnowledgeChunk};
 use crate::{config, lancedb_index, vector_index::VectorIndex};
 use guided_core::{AppError, AppResult};
-use guided_llm::{create_client, LlmClient, LlmRequest};
+use guided_llm::LlmRequest;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -53,14 +53,12 @@ pub async fn ask_rag(
         lancedb_index::LanceDbIndex::new(&index_path, "chunks", config.embedding_dim as usize)
             .await?;
 
-    // Create LLM client for embeddings
-    let embed_client = create_client(&config.provider, None, api_key)
-        .map_err(|e| AppError::Knowledge(format!("Failed to create embedding client: {}", e)))?;
-
-    // Generate query embedding
-    let query_embedding = generate_embedding(embed_client.as_ref(), &config.model, &options.query)
-        .await
-        .map_err(|e| AppError::Knowledge(format!("Failed to generate query embedding: {}", e)))?;
+    // Generate query embedding using EmbeddingEngine
+    let engine = crate::embeddings::EmbeddingEngine::new(workspace.to_path_buf());
+    let query_embeddings = engine.embed_texts(&options.base_name, &[options.query.clone()], api_key).await?;
+    let query_embedding = query_embeddings.into_iter().next().ok_or_else(|| {
+        AppError::Knowledge("Failed to generate query embedding".to_string())
+    })?;
 
     // Retrieve top-k chunks
     let results = index.search(&query_embedding, options.top_k as usize)?;
@@ -150,7 +148,7 @@ async fn generate_answer(
     tracing::debug!("Generating answer with LLM (provider: {}, low_confidence: {})", provider, low_confidence);
 
     // Create LLM client
-    let client = create_client(provider, None, api_key)
+    let client = guided_llm::create_client(provider, None, api_key)
         .map_err(|e| AppError::Knowledge(format!("Failed to create LLM client: {}", e)))?;
 
     // Build system prompt
@@ -292,85 +290,6 @@ fn truncate_snippet(text: &str, max_len: usize) -> String {
             format!("{}...", truncated)
         }
     }
-}
-
-/// Generate embedding for text using the LLM client.
-async fn generate_embedding(
-    _client: &dyn LlmClient,
-    _model: &str,
-    text: &str,
-) -> AppResult<Vec<f32>> {
-    // NOTE: This is a mock implementation for Phase 5.
-    // Production systems should call actual embedding APIs:
-    // client.embed(model, text).await
-
-    // Mock implementation: Create embeddings based on word frequencies and text properties
-    // This produces more realistic, content-aware embeddings for testing
-
-    let dim = 384; // Common embedding dimension
-    let mut embedding = vec![0.0; dim];
-
-    // Use text properties to create content-aware embeddings
-    let lower = text.to_lowercase();
-
-    // Filter stop words for better discrimination
-    let stop_words: std::collections::HashSet<&str> = [
-        "the", "is", "at", "which", "on", "a", "an", "as", "are", "was", "were", "for", "to", "of",
-        "in", "and", "or", "but", "with", "by", "from", "this", "that", "be", "have", "has", "had",
-        "it", "its", "their", "they", "them",
-    ]
-    .iter()
-    .copied()
-    .collect();
-
-    let words: Vec<&str> = lower
-        .split_whitespace()
-        .filter(|w| !stop_words.contains(w) && w.len() > 2)
-        .collect();
-
-    // Build word frequency map
-    let mut word_freq = std::collections::HashMap::new();
-    for word in &words {
-        *word_freq.entry(*word).or_insert(0) += 1;
-    }
-
-    // Map each unique word to multiple dimensions based on character trigrams
-    // This creates more specific semantic vectors
-    for (word, freq) in word_freq.iter() {
-        // Use character trigrams for better semantic encoding
-        let chars: Vec<char> = word.chars().collect();
-        for i in 0..chars.len().saturating_sub(2) {
-            let trigram = format!(
-                "{}{}{}",
-                chars[i],
-                chars[i + 1],
-                chars.get(i + 2).unwrap_or(&' ')
-            );
-            let trigram_hash = trigram
-                .bytes()
-                .fold(0u64, |acc, b| acc.wrapping_mul(37).wrapping_add(b as u64));
-
-            let dim_idx = (trigram_hash as usize) % dim;
-            embedding[dim_idx] += (*freq as f32).sqrt(); // sqrt scale for better distribution
-        }
-
-        // Also encode whole word
-        let word_hash = word
-            .bytes()
-            .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-        let base_dim = (word_hash as usize) % dim;
-        embedding[base_dim] += *freq as f32;
-    }
-
-    // Normalize to unit vector
-    let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        for v in &mut embedding {
-            *v /= norm;
-        }
-    }
-
-    Ok(embedding)
 }
 
 #[cfg(test)]

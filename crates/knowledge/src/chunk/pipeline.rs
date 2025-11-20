@@ -1,7 +1,7 @@
 //! Chunking pipeline orchestrator.
 
 use super::{
-    detection::{detect_content_type, ContentType, Language},
+    detection::{detect_content_type, ContentType},
     merging::post_process_chunks,
     splitters::{ChunkSplitter, CodeSplitter, FallbackSplitter, TextSplitter},
     Chunk,

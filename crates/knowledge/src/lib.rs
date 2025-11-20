@@ -5,6 +5,7 @@
 pub mod chunk;
 pub mod chunker; // Deprecated: use chunk module instead
 pub mod config;
+pub mod embeddings;
 pub mod lancedb_index;
 pub mod parser;
 pub mod rag;
@@ -22,7 +23,6 @@ pub use types::{
 };
 
 use guided_core::{AppError, AppResult};
-use guided_llm::{create_client, LlmClient};
 use std::path::Path;
 use std::time::Instant;
 
@@ -37,8 +37,8 @@ const MIN_RELEVANCE_SCORE: f32 = 0.20;
 /// Learn from sources and populate the knowledge base.
 pub async fn learn(
     workspace: &Path,
-    options: LearnOptions,
-    api_key: Option<&str>,
+    options: &LearnOptions,
+    _api_key: Option<&str>,
 ) -> AppResult<LearnStats> {
     let start = Instant::now();
 
@@ -60,10 +60,6 @@ pub async fn learn(
         index.reset()?;
     }
 
-    // Create LLM client for embeddings
-    let client = create_client(&config.provider, None, api_key)
-        .map_err(|e| AppError::Knowledge(format!("Failed to create embedding client: {}", e)))?;
-
     let mut sources_count = 0u32;
     let mut chunks_count = 0u32;
     let mut bytes_processed = 0u64;
@@ -72,7 +68,7 @@ pub async fn learn(
     for path in &options.paths {
         if path.is_file() {
             if let Ok(stats) =
-                process_file(&mut index, client.as_ref(), &config, path, &options).await
+                process_file(workspace, &options.base_name, &mut index, &config, path, &options).await
             {
                 sources_count += 1;
                 chunks_count += stats.0;
@@ -87,7 +83,7 @@ pub async fn learn(
                 let entry_path = entry.path();
                 if entry_path.is_file() && should_include(entry_path, &options) {
                     if let Ok(stats) =
-                        process_file(&mut index, client.as_ref(), &config, entry_path, &options)
+                        process_file(workspace, &options.base_name, &mut index, &config, entry_path, &options)
                             .await
                     {
                         sources_count += 1;
@@ -126,8 +122,9 @@ pub async fn learn(
 
 /// Process a single file.
 async fn process_file(
+    workspace: &Path,
+    base_name: &str,
     index: &mut dyn vector_index::VectorIndex,
-    client: &dyn LlmClient,
     config: &KnowledgeBaseConfig,
     path: &Path,
     _options: &LearnOptions,
@@ -152,35 +149,37 @@ async fn process_file(
     };
     
     let pipeline = chunk::ChunkPipeline::new(chunk_config);
-    let chunks = pipeline.process(&source_id, &text, Some(path))?;
+    let mut chunks = pipeline.process(&source_id, &text, Some(path))?;
 
-    let mut chunks_count = 0u32;
-
-    // Embed and insert chunks
-    for chunk_item in chunks {
-        let embedding = generate_embedding(client, &config.model, &chunk_item.text).await?;
-
-        // Enrich metadata with source path
-        let mut metadata = chunk_item.metadata;
-        if let Some(custom) = metadata.custom.as_object_mut() {
+    // Enrich metadata with source path
+    for chunk_item in &mut chunks {
+        if let Some(custom) = chunk_item.metadata.custom.as_object_mut() {
             custom.insert("source_path".to_string(), serde_json::json!(path.to_string_lossy()));
         } else {
             let mut custom_map = serde_json::Map::new();
             custom_map.insert("source_path".to_string(), serde_json::json!(path.to_string_lossy()));
-            metadata.custom = serde_json::Value::Object(custom_map);
+            chunk_item.metadata.custom = serde_json::Value::Object(custom_map);
         }
+    }
 
+    // Use EmbeddingEngine for batch embedding
+    let engine = crate::embeddings::EmbeddingEngine::new(workspace.to_path_buf());
+    let embeddings = engine.embed_chunks(base_name, &chunks, None).await?;
+    
+    let chunks_count = chunks.len() as u32;
+
+    // Convert to KnowledgeChunk with embeddings and insert
+    for (chunk_item, embedding) in chunks.into_iter().zip(embeddings) {
         let knowledge_chunk = KnowledgeChunk {
             id: chunk_item.id,
             source_id: chunk_item.source_id,
             position: chunk_item.position,
             text: chunk_item.text,
             embedding: Some(embedding),
-            metadata: serde_json::to_value(&metadata)?,
+            metadata: serde_json::to_value(&chunk_item.metadata)?,
         };
 
         index.upsert_chunk(&knowledge_chunk)?;
-        chunks_count += 1;
     }
 
     tracing::debug!(
@@ -246,13 +245,12 @@ pub async fn ask(
         lancedb_index::LanceDbIndex::new(&index_path, "chunks", config.embedding_dim as usize)
             .await?;
 
-    // Create LLM client for embeddings
-    let client = create_client(&config.provider, None, api_key)
-        .map_err(|e| AppError::Knowledge(format!("Failed to create embedding client: {}", e)))?;
-
-    // Generate query embedding
-    let query_embedding =
-        generate_embedding(client.as_ref(), &config.model, &options.query).await?;
+    // Generate query embedding using EmbeddingEngine
+    let engine = crate::embeddings::EmbeddingEngine::new(workspace.to_path_buf());
+    let query_embeddings = engine.embed_texts(&options.base_name, &[options.query.clone()], api_key).await?;
+    let query_embedding = query_embeddings.into_iter().next().ok_or_else(|| {
+        AppError::Knowledge("Failed to generate query embedding".to_string())
+    })?;
 
     // Retrieve top-k chunks
     use vector_index::VectorIndex;
@@ -356,85 +354,6 @@ pub async fn stats(workspace: &Path, base_name: &str) -> AppResult<BaseStats> {
         db_size_bytes,
         last_learn_at: None, // TODO: Track this in stats.json
     })
-}
-
-/// Generate embedding for text using the LLM client.
-async fn generate_embedding(
-    _client: &dyn LlmClient,
-    _model: &str,
-    text: &str,
-) -> AppResult<Vec<f32>> {
-    // NOTE: This is a mock implementation for Phase 5.
-    // Production systems should call actual embedding APIs:
-    // client.embed(model, text).await
-
-    // Mock implementation: Create embeddings based on word frequencies and text properties
-    // This produces more realistic, content-aware embeddings for testing
-
-    let dim = 384; // Common embedding dimension
-    let mut embedding = vec![0.0; dim];
-
-    // Use text properties to create content-aware embeddings
-    let lower = text.to_lowercase();
-
-    // Filter stop words for better discrimination
-    let stop_words: std::collections::HashSet<&str> = [
-        "the", "is", "at", "which", "on", "a", "an", "as", "are", "was", "were", "for", "to", "of",
-        "in", "and", "or", "but", "with", "by", "from", "this", "that", "be", "have", "has", "had",
-        "it", "its", "their", "they", "them",
-    ]
-    .iter()
-    .copied()
-    .collect();
-
-    let words: Vec<&str> = lower
-        .split_whitespace()
-        .filter(|w| !stop_words.contains(w) && w.len() > 2)
-        .collect();
-
-    // Build word frequency map
-    let mut word_freq = std::collections::HashMap::new();
-    for word in &words {
-        *word_freq.entry(*word).or_insert(0) += 1;
-    }
-
-    // Map each unique word to multiple dimensions based on character trigrams
-    // This creates more specific semantic vectors
-    for (word, freq) in word_freq.iter() {
-        // Use character trigrams for better semantic encoding
-        let chars: Vec<char> = word.chars().collect();
-        for i in 0..chars.len().saturating_sub(2) {
-            let trigram = format!(
-                "{}{}{}",
-                chars[i],
-                chars[i + 1],
-                chars.get(i + 2).unwrap_or(&' ')
-            );
-            let trigram_hash = trigram
-                .bytes()
-                .fold(0u64, |acc, b| acc.wrapping_mul(37).wrapping_add(b as u64));
-
-            let dim_idx = (trigram_hash as usize) % dim;
-            embedding[dim_idx] += (*freq as f32).sqrt(); // sqrt scale for better distribution
-        }
-
-        // Also encode whole word
-        let word_hash = word
-            .bytes()
-            .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-        let base_dim = (word_hash as usize) % dim;
-        embedding[base_dim] += *freq as f32;
-    }
-
-    // Normalize to unit vector
-    let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        for v in &mut embedding {
-            *v /= norm;
-        }
-    }
-
-    Ok(embedding)
 }
 
 /// Calculate total size of a directory recursively.

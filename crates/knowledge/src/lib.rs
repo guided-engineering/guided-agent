@@ -53,11 +53,15 @@ pub async fn learn(
         lancedb_index::LanceDbIndex::new(&index_path, "chunks", config.embedding_dim as usize)
             .await?;
 
+    // Initialize source manager
+    let source_manager = rag::SourceManager::new(workspace, &options.base_name);
+
     // Reset if requested
     if options.reset {
         tracing::info!("Resetting knowledge base");
         use vector_index::VectorIndex;
         index.reset()?;
+        source_manager.clear_sources()?;
     }
 
     let mut sources_count = 0u32;
@@ -67,12 +71,23 @@ pub async fn learn(
     // Process paths
     for path in &options.paths {
         if path.is_file() {
-            if let Ok(stats) =
+            if let Ok((source_id, chunk_count, byte_count)) =
                 process_file(workspace, &options.base_name, &mut index, &config, path, &options).await
             {
+                // Track source
+                let source = KnowledgeSource {
+                    source_id,
+                    path: path.to_string_lossy().to_string(),
+                    source_type: "file".to_string(),
+                    indexed_at: chrono::Utc::now(),
+                    chunk_count,
+                    byte_count,
+                };
+                source_manager.track_source(&source)?;
+
                 sources_count += 1;
-                chunks_count += stats.0;
-                bytes_processed += stats.1;
+                chunks_count += chunk_count;
+                bytes_processed += byte_count;
             }
         } else if path.is_dir() {
             for entry in WalkDir::new(path)
@@ -82,13 +97,24 @@ pub async fn learn(
             {
                 let entry_path = entry.path();
                 if entry_path.is_file() && should_include(entry_path, &options) {
-                    if let Ok(stats) =
+                    if let Ok((source_id, chunk_count, byte_count)) =
                         process_file(workspace, &options.base_name, &mut index, &config, entry_path, &options)
                             .await
                     {
+                        // Track source
+                        let source = KnowledgeSource {
+                            source_id,
+                            path: entry_path.to_string_lossy().to_string(),
+                            source_type: "file".to_string(),
+                            indexed_at: chrono::Utc::now(),
+                            chunk_count,
+                            byte_count,
+                        };
+                        source_manager.track_source(&source)?;
+
                         sources_count += 1;
-                        chunks_count += stats.0;
-                        bytes_processed += stats.1;
+                        chunks_count += chunk_count;
+                        bytes_processed += byte_count;
                     }
                 }
             }
@@ -121,6 +147,7 @@ pub async fn learn(
 }
 
 /// Process a single file.
+/// Returns (source_id, chunk_count, byte_count).
 async fn process_file(
     workspace: &Path,
     base_name: &str,
@@ -128,7 +155,7 @@ async fn process_file(
     config: &KnowledgeBaseConfig,
     path: &Path,
     _options: &LearnOptions,
-) -> AppResult<(u32, u64)> {
+) -> AppResult<(String, u32, u64)> {
     tracing::debug!("Processing file: {:?}", path);
 
     // Parse file
@@ -189,7 +216,7 @@ async fn process_file(
         size_bytes
     );
 
-    Ok((chunks_count, size_bytes))
+    Ok((source_id, chunks_count, size_bytes))
 }
 
 /// Check if a file should be included based on patterns.
@@ -319,7 +346,11 @@ pub async fn clean(workspace: &Path, base_name: &str) -> AppResult<()> {
     use vector_index::VectorIndex;
     index.reset()?;
 
-    tracing::info!("Knowledge base '{}' cleaned", base_name);
+    // Clear source tracking
+    let source_manager = rag::SourceManager::new(workspace, base_name);
+    source_manager.clear_sources()?;
+
+    tracing::info!("Knowledge base '{}' cleaned (index and sources.jsonl cleared)", base_name);
     Ok(())
 }
 
@@ -347,12 +378,30 @@ pub async fn stats(workspace: &Path, base_name: &str) -> AppResult<BaseStats> {
     // Calculate directory size
     let db_size_bytes = calculate_dir_size(&index_path);
 
+    // Read sources.jsonl to get last_learn_at
+    let source_manager = rag::SourceManager::new(workspace, base_name);
+    let sources = source_manager.list_sources().unwrap_or_default();
+    
+    let last_learn_at = sources
+        .iter()
+        .map(|s| s.indexed_at)
+        .max();
+
+    tracing::debug!(
+        "Stats for '{}': {} sources, {} chunks, {} bytes, last_learn_at: {:?}",
+        base_name,
+        sources_count,
+        chunks_count,
+        db_size_bytes,
+        last_learn_at
+    );
+
     Ok(BaseStats {
         base_name: base_name.to_string(),
         sources_count,
         chunks_count,
         db_size_bytes,
-        last_learn_at: None, // TODO: Track this in stats.json
+        last_learn_at,
     })
 }
 

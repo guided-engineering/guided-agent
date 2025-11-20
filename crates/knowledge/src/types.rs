@@ -63,26 +63,26 @@ impl Default for KnowledgeBaseConfig {
     }
 }
 
-/// Represents a source document in the knowledge base.
+/// Represents a source document in the knowledge base (sources.jsonl tracking).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KnowledgeSource {
-    /// Unique identifier
-    pub id: String,
+    /// Unique source identifier
+    pub source_id: String,
 
-    /// Local file path (if applicable)
-    pub path: Option<PathBuf>,
+    /// Source path (file path or URL)
+    pub path: String,
 
-    /// URL (if applicable)
-    pub url: Option<String>,
+    /// Source type: "file", "url", "zip"
+    pub source_type: String,
 
-    /// Content type (markdown, html, code, etc.)
-    pub content_type: String,
+    /// When this source was indexed
+    pub indexed_at: DateTime<Utc>,
 
-    /// When this source was learned
-    pub learned_at: DateTime<Utc>,
+    /// Number of chunks created from this source
+    pub chunk_count: u32,
 
-    /// Size in bytes
-    pub size_bytes: u64,
+    /// Source size in bytes
+    pub byte_count: u64,
 }
 
 /// A text chunk with embedding.

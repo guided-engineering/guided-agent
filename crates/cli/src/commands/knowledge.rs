@@ -165,7 +165,7 @@ impl KnowledgeCleanCommand {
     pub async fn execute(&self, config: &AppConfig) -> AppResult<()> {
         tracing::info!("Executing knowledge clean command for base '{}'", self.base);
 
-        guided_knowledge::clean(&config.workspace, &self.base)?;
+        guided_knowledge::clean(&config.workspace, &self.base).await?;
 
         println!("Knowledge base '{}' cleaned", self.base);
 
@@ -188,7 +188,7 @@ impl KnowledgeStatsCommand {
     pub async fn execute(&self, config: &AppConfig) -> AppResult<()> {
         tracing::info!("Executing knowledge stats command for base '{}'", self.base);
 
-        let stats = guided_knowledge::stats(&config.workspace, &self.base)?;
+        let stats = guided_knowledge::stats(&config.workspace, &self.base).await?;
 
         if self.json {
             let output = serde_json::json!({

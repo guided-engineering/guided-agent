@@ -27,6 +27,10 @@ pub struct KnowledgeBaseConfig {
     /// Maximum context tokens for retrieval
     #[serde(default = "default_max_context_tokens")]
     pub max_context_tokens: u32,
+
+    /// Embedding vector dimension
+    #[serde(default = "default_embedding_dim")]
+    pub embedding_dim: u32,
 }
 
 fn default_chunk_size() -> u32 {
@@ -35,6 +39,10 @@ fn default_chunk_size() -> u32 {
 
 fn default_chunk_overlap() -> u32 {
     64
+}
+
+fn default_embedding_dim() -> u32 {
+    384
 }
 
 fn default_max_context_tokens() -> u32 {
@@ -50,6 +58,7 @@ impl Default for KnowledgeBaseConfig {
             chunk_size: default_chunk_size(),
             chunk_overlap: default_chunk_overlap(),
             max_context_tokens: default_max_context_tokens(),
+            embedding_dim: default_embedding_dim(),
         }
     }
 }
@@ -182,7 +191,7 @@ pub struct BaseStats {
 
 /// Internal chunk candidate before embedding.
 #[derive(Debug, Clone)]
-pub(crate) struct ChunkCandidate {
+pub struct ChunkCandidate {
     pub source_id: String,
     pub position: u32,
     pub text: String,

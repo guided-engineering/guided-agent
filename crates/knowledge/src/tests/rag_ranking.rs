@@ -1,9 +1,9 @@
-//! Tests for RAG ranking correctness.
+//! Tests for RAG ranking correctness with LanceDB backend.
 
-use crate::index::{init_index, insert_chunk, insert_source, query_chunks};
-use crate::types::{KnowledgeChunk, KnowledgeSource};
-use chrono::Utc;
-use tempfile::NamedTempFile;
+use crate::lancedb_index::LanceDbIndex;
+use crate::types::KnowledgeChunk;
+use crate::vector_index::VectorIndex;
+use tempfile::TempDir;
 
 #[cfg(test)]
 mod tests {
@@ -36,21 +36,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_relevant_query_returns_high_scores() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let conn = init_index(temp_file.path()).unwrap();
-
-        // Insert source
-        let source = KnowledgeSource {
-            id: "source1".to_string(),
-            path: None,
-            url: None,
-            content_type: "text".to_string(),
-            learned_at: Utc::now(),
-            size_bytes: 100,
-        };
-        insert_source(&conn, &source).unwrap();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_relevant_query_returns_high_scores() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut index = LanceDbIndex::new(temp_dir.path(), "test_table", 4)
+            .await
+            .unwrap();
 
         // Create chunks with similar embeddings to our query
         // Query will be about "rust programming"
@@ -68,12 +59,13 @@ mod tests {
             normalize(&[-0.3, -0.8, 0.4, -0.2]),
         );
 
-        insert_chunk(&conn, &rust_chunk).unwrap();
-        insert_chunk(&conn, &unrelated_chunk).unwrap();
+        index.upsert_chunk(&rust_chunk).unwrap();
+        index.upsert_chunk(&unrelated_chunk).unwrap();
+        index.flush().unwrap();
 
         // Query with embedding similar to rust_chunk
         let query_embedding = normalize(&[0.9, 0.4, 0.3, 0.1]);
-        let results = query_chunks(&conn, &query_embedding, 5).unwrap();
+        let results = index.search(&query_embedding, 5).unwrap();
 
         // Should return both chunks, but rust_chunk with higher score
         assert_eq!(results.len(), 2);
@@ -93,21 +85,12 @@ mod tests {
         assert!(results[0].1 > results[1].1, "Scores should be ordered");
     }
 
-    #[test]
-    fn test_unrelated_query_returns_low_scores() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let conn = init_index(temp_file.path()).unwrap();
-
-        // Insert source
-        let source = KnowledgeSource {
-            id: "source1".to_string(),
-            path: None,
-            url: None,
-            content_type: "text".to_string(),
-            learned_at: Utc::now(),
-            size_bytes: 100,
-        };
-        insert_source(&conn, &source).unwrap();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_unrelated_query_returns_low_scores() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut index = LanceDbIndex::new(temp_dir.path(), "test_table", 4)
+            .await
+            .unwrap();
 
         // Create a chunk about programming
         let programming_chunk = create_test_chunk(
@@ -117,11 +100,12 @@ mod tests {
             normalize(&[1.0, 0.0, 0.0, 0.0]),
         );
 
-        insert_chunk(&conn, &programming_chunk).unwrap();
+        index.upsert_chunk(&programming_chunk).unwrap();
+        index.flush().unwrap();
 
         // Query with completely unrelated embedding (about cooking)
         let query_embedding = normalize(&[0.0, 1.0, 0.0, 0.0]);
-        let results = query_chunks(&conn, &query_embedding, 5).unwrap();
+        let results = index.search(&query_embedding, 5).unwrap();
 
         // Should still return the chunk but with low score
         assert_eq!(results.len(), 1);
@@ -134,21 +118,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_scores_are_ordered_descending() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let conn = init_index(temp_file.path()).unwrap();
-
-        // Insert source
-        let source = KnowledgeSource {
-            id: "source1".to_string(),
-            path: None,
-            url: None,
-            content_type: "text".to_string(),
-            learned_at: Utc::now(),
-            size_bytes: 100,
-        };
-        insert_source(&conn, &source).unwrap();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_scores_are_ordered_descending() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut index = LanceDbIndex::new(temp_dir.path(), "test_table", 3)
+            .await
+            .unwrap();
 
         // Create chunks with varying similarity to query
         let chunks = vec![
@@ -159,12 +134,13 @@ mod tests {
         ];
 
         for chunk in chunks {
-            insert_chunk(&conn, &chunk).unwrap();
+            index.upsert_chunk(&chunk).unwrap();
         }
+        index.flush().unwrap();
 
         // Query with embedding [1, 0, 0]
         let query_embedding = normalize(&[1.0, 0.0, 0.0]);
-        let results = query_chunks(&conn, &query_embedding, 10).unwrap();
+        let results = index.search(&query_embedding, 10).unwrap();
 
         // Verify scores are in descending order
         for i in 1..results.len() {
@@ -184,21 +160,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_negative_similarity_chunks() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let conn = init_index(temp_file.path()).unwrap();
-
-        // Insert source
-        let source = KnowledgeSource {
-            id: "source1".to_string(),
-            path: None,
-            url: None,
-            content_type: "text".to_string(),
-            learned_at: Utc::now(),
-            size_bytes: 100,
-        };
-        insert_source(&conn, &source).unwrap();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_negative_similarity_chunks() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut index = LanceDbIndex::new(temp_dir.path(), "test_table", 3)
+            .await
+            .unwrap();
 
         // Create chunk opposite to query direction
         let opposite_chunk = create_test_chunk(
@@ -208,11 +175,12 @@ mod tests {
             normalize(&[-1.0, 0.0, 0.0]),
         );
 
-        insert_chunk(&conn, &opposite_chunk).unwrap();
+        index.upsert_chunk(&opposite_chunk).unwrap();
+        index.flush().unwrap();
 
         // Query with opposite embedding
         let query_embedding = normalize(&[1.0, 0.0, 0.0]);
-        let results = query_chunks(&conn, &query_embedding, 5).unwrap();
+        let results = index.search(&query_embedding, 5).unwrap();
 
         // Should return chunk with negative score
         assert_eq!(results.len(), 1);
@@ -226,32 +194,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_empty_index_returns_no_results() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let conn = init_index(temp_file.path()).unwrap();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_empty_index_returns_no_results() {
+        let temp_dir = TempDir::new().unwrap();
+        let index = LanceDbIndex::new(temp_dir.path(), "test_table", 3)
+            .await
+            .unwrap();
 
         let query_embedding = normalize(&[1.0, 0.0, 0.0]);
-        let results = query_chunks(&conn, &query_embedding, 5).unwrap();
+        let results = index.search(&query_embedding, 5).unwrap();
 
         assert_eq!(results.len(), 0, "Empty index should return no results");
     }
 
-    #[test]
-    fn test_top_k_limit_respected() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let conn = init_index(temp_file.path()).unwrap();
-
-        // Insert source
-        let source = KnowledgeSource {
-            id: "source1".to_string(),
-            path: None,
-            url: None,
-            content_type: "text".to_string(),
-            learned_at: Utc::now(),
-            size_bytes: 100,
-        };
-        insert_source(&conn, &source).unwrap();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_top_k_limit_respected() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut index = LanceDbIndex::new(temp_dir.path(), "test_table", 3)
+            .await
+            .unwrap();
 
         // Insert 10 chunks
         for i in 0..10 {
@@ -261,12 +222,13 @@ mod tests {
                 &format!("Text {}", i),
                 normalize(&[i as f32 / 10.0, 0.0, 0.0]),
             );
-            insert_chunk(&conn, &chunk).unwrap();
+            index.upsert_chunk(&chunk).unwrap();
         }
+        index.flush().unwrap();
 
         // Query with top_k = 3
         let query_embedding = normalize(&[1.0, 0.0, 0.0]);
-        let results = query_chunks(&conn, &query_embedding, 3).unwrap();
+        let results = index.search(&query_embedding, 3).unwrap();
 
         assert_eq!(results.len(), 3, "Should return exactly top_k results");
     }

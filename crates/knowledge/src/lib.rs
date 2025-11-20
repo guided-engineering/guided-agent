@@ -1,12 +1,13 @@
 //! Knowledge base management system.
 //!
-//! Provides local-first RAG using SQLite and embeddings.
+//! Provides local-first RAG using LanceDB vector index.
 
 pub mod chunker;
 pub mod config;
-pub mod index;
+pub mod lancedb_index;
 pub mod parser;
 pub mod types;
+pub mod vector_index;
 
 #[cfg(test)]
 mod tests;
@@ -17,7 +18,6 @@ pub use types::{
     LearnOptions, LearnStats,
 };
 
-use chrono::Utc;
 use guided_core::{AppError, AppResult};
 use guided_llm::{create_client, LlmClient};
 use std::path::Path;
@@ -44,13 +44,17 @@ pub async fn learn(
     // Load or create config
     let config = config::load_config(workspace, &options.base_name)?;
 
-    // Reset if requested
+    // Initialize LanceDB index
     let index_path = config::get_index_path(workspace, &options.base_name);
-    let conn = index::init_index(&index_path)?;
+    let mut index =
+        lancedb_index::LanceDbIndex::new(&index_path, "chunks", config.embedding_dim as usize)
+            .await?;
 
+    // Reset if requested
     if options.reset {
         tracing::info!("Resetting knowledge base");
-        index::reset_index(&conn)?;
+        use vector_index::VectorIndex;
+        index.reset()?;
     }
 
     // Create LLM client for embeddings
@@ -64,7 +68,9 @@ pub async fn learn(
     // Process paths
     for path in &options.paths {
         if path.is_file() {
-            if let Ok(stats) = process_file(&conn, client.as_ref(), &config, path, &options).await {
+            if let Ok(stats) =
+                process_file(&mut index, client.as_ref(), &config, path, &options).await
+            {
                 sources_count += 1;
                 chunks_count += stats.0;
                 bytes_processed += stats.1;
@@ -78,7 +84,8 @@ pub async fn learn(
                 let entry_path = entry.path();
                 if entry_path.is_file() && should_include(entry_path, &options) {
                     if let Ok(stats) =
-                        process_file(&conn, client.as_ref(), &config, entry_path, &options).await
+                        process_file(&mut index, client.as_ref(), &config, entry_path, &options)
+                            .await
                     {
                         sources_count += 1;
                         chunks_count += stats.0;
@@ -88,6 +95,10 @@ pub async fn learn(
             }
         }
     }
+
+    // Flush index
+    use vector_index::VectorIndex;
+    index.flush()?;
 
     // Save config
     config::save_config(workspace, &config)?;
@@ -112,7 +123,7 @@ pub async fn learn(
 
 /// Process a single file.
 async fn process_file(
-    conn: &rusqlite::Connection,
+    index: &mut dyn vector_index::VectorIndex,
     client: &dyn LlmClient,
     config: &KnowledgeBaseConfig,
     path: &Path,
@@ -126,16 +137,6 @@ async fn process_file(
 
     // Create source
     let source_id = uuid::Uuid::new_v4().to_string();
-    let source = KnowledgeSource {
-        id: source_id.clone(),
-        path: Some(path.to_path_buf()),
-        url: None,
-        content_type: parser::ContentType::from_path(path).as_str().to_string(),
-        learned_at: Utc::now(),
-        size_bytes,
-    };
-
-    index::insert_source(conn, &source)?;
 
     // Chunk text
     let candidates = chunker::chunk_text(
@@ -153,14 +154,14 @@ async fn process_file(
 
         let chunk = KnowledgeChunk {
             id: uuid::Uuid::new_v4().to_string(),
-            source_id: candidate.source_id,
+            source_id: candidate.source_id.clone(),
             position: candidate.position,
             text: candidate.text,
             embedding: Some(embedding),
             metadata: candidate.metadata,
         };
 
-        index::insert_chunk(conn, &chunk)?;
+        index.upsert_chunk(&chunk)?;
         chunks_count += 1;
     }
 
@@ -222,7 +223,10 @@ pub async fn ask(
         )));
     }
 
-    let conn = index::init_index(&index_path)?;
+    // Initialize LanceDB index
+    let index =
+        lancedb_index::LanceDbIndex::new(&index_path, "chunks", config.embedding_dim as usize)
+            .await?;
 
     // Create LLM client for embeddings
     let client = create_client(&config.provider, None, api_key)
@@ -233,7 +237,8 @@ pub async fn ask(
         generate_embedding(client.as_ref(), &config.model, &options.query).await?;
 
     // Retrieve top-k chunks
-    let results = index::query_chunks(&conn, &query_embedding, options.top_k as usize)?;
+    use vector_index::VectorIndex;
+    let results = index.search(&query_embedding, options.top_k as usize)?;
 
     // Debug: log scores before filtering
     if !results.is_empty() {
@@ -278,10 +283,12 @@ pub async fn ask(
 }
 
 /// Clean (reset) a knowledge base.
-pub fn clean(workspace: &Path, base_name: &str) -> AppResult<()> {
+pub async fn clean(workspace: &Path, base_name: &str) -> AppResult<()> {
     tracing::info!("Cleaning knowledge base '{}'", base_name);
 
+    let config = config::load_config(workspace, base_name)?;
     let index_path = config::get_index_path(workspace, base_name);
+
     if !index_path.exists() {
         return Err(AppError::Knowledge(format!(
             "Knowledge base '{}' does not exist",
@@ -289,18 +296,24 @@ pub fn clean(workspace: &Path, base_name: &str) -> AppResult<()> {
         )));
     }
 
-    let conn = index::init_index(&index_path)?;
-    index::reset_index(&conn)?;
+    let mut index =
+        lancedb_index::LanceDbIndex::new(&index_path, "chunks", config.embedding_dim as usize)
+            .await?;
+
+    use vector_index::VectorIndex;
+    index.reset()?;
 
     tracing::info!("Knowledge base '{}' cleaned", base_name);
     Ok(())
 }
 
 /// Get statistics for a knowledge base.
-pub fn stats(workspace: &Path, base_name: &str) -> AppResult<BaseStats> {
+pub async fn stats(workspace: &Path, base_name: &str) -> AppResult<BaseStats> {
     tracing::info!("Getting stats for knowledge base '{}'", base_name);
 
+    let config = config::load_config(workspace, base_name)?;
     let index_path = config::get_index_path(workspace, base_name);
+
     if !index_path.exists() {
         return Err(AppError::Knowledge(format!(
             "Knowledge base '{}' does not exist",
@@ -308,10 +321,15 @@ pub fn stats(workspace: &Path, base_name: &str) -> AppResult<BaseStats> {
         )));
     }
 
-    let conn = index::init_index(&index_path)?;
-    let (sources_count, chunks_count) = index::get_stats(&conn)?;
+    let index =
+        lancedb_index::LanceDbIndex::new(&index_path, "chunks", config.embedding_dim as usize)
+            .await?;
 
-    let db_size_bytes = std::fs::metadata(&index_path).map(|m| m.len()).unwrap_or(0);
+    use vector_index::VectorIndex;
+    let (sources_count, chunks_count) = index.stats()?;
+
+    // Calculate directory size
+    let db_size_bytes = calculate_dir_size(&index_path);
 
     Ok(BaseStats {
         base_name: base_name.to_string(),
@@ -399,4 +417,15 @@ async fn generate_embedding(
     }
 
     Ok(embedding)
+}
+
+/// Calculate total size of a directory recursively.
+fn calculate_dir_size(path: &Path) -> u64 {
+    WalkDir::new(path)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len())
+        .sum()
 }

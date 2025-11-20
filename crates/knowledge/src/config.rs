@@ -83,9 +83,9 @@ pub fn get_base_dir(workspace: &Path, base_name: &str) -> PathBuf {
     workspace.join(".guided").join("knowledge").join(base_name)
 }
 
-/// Get the SQLite index path for a base.
+/// Get the LanceDB index directory for a base.
 pub fn get_index_path(workspace: &Path, base_name: &str) -> PathBuf {
-    get_base_dir(workspace, base_name).join("index.sqlite")
+    get_base_dir(workspace, base_name).join("lance")
 }
 
 /// Get the sources JSONL path for a base.

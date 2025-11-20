@@ -107,7 +107,7 @@ async fn main() -> AppResult<()> {
     let result = match cli.command {
         Commands::Ask(cmd) => cmd.execute(&config).await,
         Commands::Task(cmd) => cmd.execute().await,
-        Commands::Knowledge(cmd) => cmd.execute().await,
+        Commands::Knowledge(cmd) => cmd.execute(&config).await,
         Commands::Stats(cmd) => cmd.execute().await,
     };
 

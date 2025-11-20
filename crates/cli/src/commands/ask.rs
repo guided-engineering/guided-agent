@@ -314,37 +314,45 @@ impl AskCommand {
     }
 
     /// Retrieve knowledge base context.
-    ///
-    /// This is a stub implementation for Phase 4. Full RAG will be implemented in Phase 5.
     async fn retrieve_knowledge(&self, config: &AppConfig, kb_name: &str) -> AppResult<String> {
-        let kb_dir = config.guided_dir().join("knowledge").join(kb_name);
+        tracing::info!("Retrieving knowledge from base: {}", kb_name);
 
-        // Check if knowledge base exists
-        if !kb_dir.exists() {
-            return Err(guided_core::AppError::Knowledge(format!(
-                "Knowledge base '{}' not found at {:?}",
-                kb_name, kb_dir
-            )));
-        }
+        // Use knowledge ask API to retrieve relevant chunks
+        let api_key = config.resolve_api_key(&config.provider).ok().flatten();
 
-        // Check if index exists
-        let index_file = kb_dir.join("index.sqlite");
-        if !index_file.exists() {
-            return Err(guided_core::AppError::Knowledge(format!(
-                "Knowledge base '{}' has no index. Run 'guided knowledge learn' first.",
-                kb_name
-            )));
-        }
+        let options = guided_knowledge::AskOptions {
+            base_name: kb_name.to_string(),
+            query: self
+                .get_prompt()
+                .ok_or_else(|| guided_core::AppError::Config("No prompt provided".to_string()))?,
+            top_k: 5, // Default to top 5 chunks
+        };
 
-        // For Phase 4, return a stub message
-        // Phase 5 will implement actual RAG retrieval
-        tracing::warn!(
-            "Knowledge base retrieval is a stub in Phase 4. Full RAG coming in Phase 5."
+        let result =
+            guided_knowledge::ask(&config.workspace, options, api_key.as_deref()).await?;
+
+        // Format chunks into context string
+        let context = result
+            .chunks
+            .iter()
+            .enumerate()
+            .map(|(i, chunk)| {
+                format!(
+                    "[Chunk {}]\n{}\n",
+                    i + 1,
+                    chunk.text.trim()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        tracing::debug!(
+            "Retrieved {} chunks ({} bytes) from knowledge base '{}'",
+            result.chunks.len(),
+            context.len(),
+            kb_name
         );
 
-        Ok(format!(
-            "[Knowledge base '{}' exists but retrieval not yet implemented. Coming in Phase 5.]",
-            kb_name
-        ))
+        Ok(context)
     }
 }

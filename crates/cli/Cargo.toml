@@ -9,6 +9,7 @@ license.workspace = true
 guided-core.workspace = true
 guided-llm.workspace = true
 guided-prompt.workspace = true
+guided-knowledge = { path = "../knowledge" }
 clap.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
